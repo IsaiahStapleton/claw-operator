@@ -36,6 +36,9 @@ data:
             "workspace": "~/.openclaw/workspace"
           }
         ]
+      },
+      "skills": {
+        "allowBundled": []
       }
     }
   merge.js: |
