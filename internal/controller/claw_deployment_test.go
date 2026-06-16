@@ -324,7 +324,7 @@ func TestClawImageOverrideIntegration(t *testing.T) {
 
 		gateway := findContainer(deployment, ClawGatewayContainerName)
 		require.NotNil(t, gateway, "gateway container should exist")
-		assert.Equal(t, OpenClawImageBase+":2026.6.1", gateway.Image,
+		assert.Equal(t, OpenClawImageBase+":2026.6.8", gateway.Image,
 			"should use Kustomize default when spec.version is empty")
 	})
 }

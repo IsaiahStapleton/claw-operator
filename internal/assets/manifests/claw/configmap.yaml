@@ -594,7 +594,7 @@ data:
       agent defaults) can be set declaratively via `spec.config.raw` in the CR.
       Non-operator-managed config can also be managed via `openclaw config patch`.
     - **Version override:** `spec.version` overrides the OpenClaw image tag for this
-      instance (e.g., `version: "2026.6.1"`). When omitted, the operator's built-in
+      instance (e.g., `version: "2026.6.8"`). When omitted, the operator's built-in
       default is used. Only the tag is overridden — the image name is fixed. If the
       user asks how to upgrade OpenClaw without rebuilding the operator, this is the
       answer.
