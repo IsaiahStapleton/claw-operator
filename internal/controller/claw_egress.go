@@ -393,6 +393,56 @@ func filterInCluster(targets []egressTarget) []egressTarget {
 	return result
 }
 
+// injectChannelGatewayEgress appends a port-443 egress rule to {instance}-egress
+// when any credential declares a channel. Channel plugins (Discord, Slack, etc.)
+// open WebSocket connections that bypass HTTP_PROXY, so the gateway pod needs
+// direct outbound access on port 443.
+func injectChannelGatewayEgress(
+	objects []*unstructured.Unstructured,
+	instance *clawv1alpha1.Claw,
+) error {
+	hasChannel := false
+	for _, cred := range instance.Spec.Credentials {
+		if cred.Channel != "" {
+			hasChannel = true
+			break
+		}
+	}
+	if !hasChannel {
+		return nil
+	}
+
+	npName := getEgressNetworkPolicyName(instance.Name)
+	for _, obj := range objects {
+		if obj.GetKind() != NetworkPolicyKind || obj.GetName() != npName {
+			continue
+		}
+
+		egress, found, err := unstructured.NestedSlice(obj.Object, "spec", "egress")
+		if err != nil {
+			return fmt.Errorf("failed to get egress rules from NetworkPolicy: %w", err)
+		}
+		if !found {
+			egress = []any{}
+		}
+
+		egress = append(egress, map[string]any{
+			"ports": []any{
+				map[string]any{
+					"port":     int64(443),
+					"protocol": "TCP",
+				},
+			},
+		})
+
+		if err := unstructured.SetNestedSlice(obj.Object, egress, "spec", "egress"); err != nil {
+			return fmt.Errorf("failed to set egress rules on NetworkPolicy: %w", err)
+		}
+		return nil
+	}
+	return fmt.Errorf("NetworkPolicy %q not found in manifests", npName)
+}
+
 // injectAdditionalEgress appends the user's spec.network.additionalEgress rules
 // to {instance}-egress. Rules are converted from typed NetworkPolicyEgressRule to
 // unstructured maps via JSON round-trip.

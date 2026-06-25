@@ -360,6 +360,25 @@ data:
 
     // Merge or overwrite openclaw.json
     const ops = JSON.parse(fs.readFileSync(path.join(configDir, "operator.json"), "utf8"));
+    // Substitute channel token placeholders with real values from CHANNEL_* env vars.
+    // CHANNEL_SECRET_MAP is a JSON object: {"envVarName": {"channel": "discord", "key": "token", "placeholder": "placeholder"}}
+    // The operator builds this map from knownChannels and sets it on the init-config container.
+    if (process.env.CHANNEL_SECRET_MAP && ops.channels) {
+      try {
+        const secretMap = JSON.parse(process.env.CHANNEL_SECRET_MAP);
+        for (const [envName, mapping] of Object.entries(secretMap)) {
+          const envVal = process.env[envName];
+          if (!envVal) continue;
+          const channelConf = ops.channels[mapping.channel];
+          if (!channelConf || typeof channelConf !== "object") continue;
+          if (channelConf[mapping.key] === mapping.placeholder) {
+            channelConf[mapping.key] = envVal;
+          }
+        }
+      } catch (e) {
+        console.warn("[init-config] failed to parse CHANNEL_SECRET_MAP:", e.message);
+      }
+    }
     const seed = JSON.parse(fs.readFileSync(path.join(configDir, "openclaw.json"), "utf8"));
     const pvcPath = path.join(pvcDir, "openclaw.json");
     const agentFilesSourceDir = prepareAgentFilesSource();

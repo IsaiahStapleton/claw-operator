@@ -210,12 +210,12 @@ func TestBuildChannelConfig(t *testing.T) {
 		assert.Equal(t, "*", allowFrom[0])
 	})
 
-	t.Run("discord builds base config with enabled and botToken", func(t *testing.T) {
+	t.Run("discord builds base config with enabled and token", func(t *testing.T) {
 		cred := clawv1alpha1.CredentialSpec{Name: "dc", Channel: "discord"}
 		config, err := buildChannelConfig(cred)
 		require.NoError(t, err)
 		assert.Equal(t, true, config["enabled"])
-		assert.Equal(t, "placeholder", config["botToken"])
+		assert.Equal(t, "placeholder", config["token"])
 	})
 
 	t.Run("slack builds base config with both tokens", func(t *testing.T) {

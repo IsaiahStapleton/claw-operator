@@ -1725,6 +1725,118 @@ func TestConfigureGatewayForMcpServers(t *testing.T) {
 	})
 }
 
+func TestConfigureGatewayForChannels(t *testing.T) {
+	makeInitConfigDeployment := func() []*unstructured.Unstructured {
+		dep := &unstructured.Unstructured{}
+		dep.SetKind(DeploymentKind)
+		dep.SetName(getClawDeploymentName(testInstanceName))
+		dep.Object["spec"] = map[string]any{
+			"template": map[string]any{
+				"spec": map[string]any{
+					"initContainers": []any{
+						map[string]any{
+							"name": ClawInitConfigContainerName,
+							"env":  []any{},
+						},
+					},
+				},
+			},
+		}
+		return []*unstructured.Unstructured{dep}
+	}
+
+	t.Run("should add discord token env var and secret map", func(t *testing.T) {
+		objects := makeInitConfigDeployment()
+		instance := &clawv1alpha1.Claw{}
+		instance.Name = testInstanceName
+		instance.Spec.Credentials = []clawv1alpha1.CredentialSpec{
+			{
+				Name:    "discord",
+				Channel: "discord",
+				SecretRef: []clawv1alpha1.SecretRefEntry{
+					{Name: "discord-bot-secret", Key: "token"},
+				},
+			},
+		}
+
+		require.NoError(t, configureGatewayForChannels(objects, instance))
+
+		initContainers, _, _ := unstructured.NestedSlice(objects[0].Object, "spec", "template", "spec", "initContainers")
+		container := initContainers[0].(map[string]any)
+		envVars := container["env"].([]any)
+
+		require.Len(t, envVars, 2) // CHANNEL_DISCORD_TOKEN + CHANNEL_SECRET_MAP
+
+		tokenEnv := envVars[0].(map[string]any)
+		assert.Equal(t, "CHANNEL_DISCORD_TOKEN", tokenEnv["name"])
+		valueFrom := tokenEnv["valueFrom"].(map[string]any)
+		secretKeyRef := valueFrom["secretKeyRef"].(map[string]any)
+		assert.Equal(t, "discord-bot-secret", secretKeyRef["name"])
+		assert.Equal(t, "token", secretKeyRef["key"])
+
+		mapEnv := envVars[1].(map[string]any)
+		assert.Equal(t, "CHANNEL_SECRET_MAP", mapEnv["name"])
+		assert.Contains(t, mapEnv["value"], "CHANNEL_DISCORD_TOKEN")
+		assert.Contains(t, mapEnv["value"], `"channel":"discord"`)
+	})
+
+	t.Run("should be no-op when no channel credentials", func(t *testing.T) {
+		objects := makeInitConfigDeployment()
+		instance := &clawv1alpha1.Claw{}
+		instance.Name = testInstanceName
+		instance.Spec.Credentials = []clawv1alpha1.CredentialSpec{
+			{
+				Name:     "anthropic",
+				Provider: "anthropic",
+				SecretRef: []clawv1alpha1.SecretRefEntry{
+					{Name: "anthropic-key", Key: "api-key"},
+				},
+			},
+		}
+
+		require.NoError(t, configureGatewayForChannels(objects, instance))
+
+		initContainers, _, _ := unstructured.NestedSlice(objects[0].Object, "spec", "template", "spec", "initContainers")
+		container := initContainers[0].(map[string]any)
+		envVars := container["env"].([]any)
+		assert.Empty(t, envVars)
+	})
+
+	t.Run("should handle slack with multiple secret roles", func(t *testing.T) {
+		objects := makeInitConfigDeployment()
+		instance := &clawv1alpha1.Claw{}
+		instance.Name = testInstanceName
+		instance.Spec.Credentials = []clawv1alpha1.CredentialSpec{
+			{
+				Name:    "slack",
+				Channel: "slack",
+				SecretRef: []clawv1alpha1.SecretRefEntry{
+					{Name: "slack-secret", Key: "bot-token", Role: "botToken"},
+					{Name: "slack-secret", Key: "app-token", Role: "appToken"},
+				},
+			},
+		}
+
+		require.NoError(t, configureGatewayForChannels(objects, instance))
+
+		initContainers, _, _ := unstructured.NestedSlice(objects[0].Object, "spec", "template", "spec", "initContainers")
+		container := initContainers[0].(map[string]any)
+		envVars := container["env"].([]any)
+
+		// 2 secret env vars + CHANNEL_SECRET_MAP
+		require.Len(t, envVars, 3)
+
+		botEnv := envVars[0].(map[string]any)
+		assert.Equal(t, "CHANNEL_SLACK_BOT_TOKEN", botEnv["name"])
+
+		appEnv := envVars[1].(map[string]any)
+		assert.Equal(t, "CHANNEL_SLACK_APP_TOKEN", appEnv["name"])
+
+		mapEnv := envVars[2].(map[string]any)
+		assert.Equal(t, "CHANNEL_SECRET_MAP", mapEnv["name"])
+	})
+}
+
 // --- PVC volume mount safety tests ---
 
 func TestClawHomePVCMountsUseSubPath(t *testing.T) {

@@ -802,6 +802,82 @@ func filterExternal(targets []egressTarget) []egressTarget {
 	return result
 }
 
+// --- injectChannelGatewayEgress unit tests ---
+
+func TestInjectChannelGatewayEgress(t *testing.T) {
+	makeNP := func() *unstructured.Unstructured {
+		return &unstructured.Unstructured{Object: map[string]any{
+			"kind":       NetworkPolicyKind,
+			"apiVersion": "networking.k8s.io/v1",
+			"metadata":   map[string]any{"name": "inst-egress"},
+			"spec": map[string]any{
+				"egress": []any{
+					map[string]any{
+						"ports": []any{map[string]any{"port": int64(8080), "protocol": "TCP"}},
+						"to":    []any{map[string]any{"podSelector": map[string]any{}}},
+					},
+				},
+			},
+		}}
+	}
+
+	t.Run("no channel credentials is no-op", func(t *testing.T) {
+		np := makeNP()
+		instance := &clawv1alpha1.Claw{
+			ObjectMeta: metav1.ObjectMeta{Name: "inst"},
+			Spec: clawv1alpha1.ClawSpec{
+				Credentials: []clawv1alpha1.CredentialSpec{
+					{Name: "ai", Provider: "google"},
+				},
+			},
+		}
+		require.NoError(t, injectChannelGatewayEgress([]*unstructured.Unstructured{np}, instance))
+
+		egress, _, _ := unstructured.NestedSlice(np.Object, "spec", "egress")
+		assert.Len(t, egress, 1, "should not add any rules")
+	})
+
+	t.Run("discord channel adds port 443 rule", func(t *testing.T) {
+		np := makeNP()
+		instance := &clawv1alpha1.Claw{
+			ObjectMeta: metav1.ObjectMeta{Name: "inst"},
+			Spec: clawv1alpha1.ClawSpec{
+				Credentials: []clawv1alpha1.CredentialSpec{
+					{Name: "ai", Provider: "google"},
+					{Name: "dc", Channel: "discord"},
+				},
+			},
+		}
+		require.NoError(t, injectChannelGatewayEgress([]*unstructured.Unstructured{np}, instance))
+
+		egress, _, _ := unstructured.NestedSlice(np.Object, "spec", "egress")
+		require.Len(t, egress, 2, "should append one rule")
+
+		rule := egress[1].(map[string]any)
+		ports := rule["ports"].([]any)
+		assert.Len(t, ports, 1)
+		assert.Equal(t, int64(443), ports[0].(map[string]any)["port"])
+		assert.Nil(t, rule["to"], "rule should have no 'to' selector")
+	})
+
+	t.Run("multiple channels adds single port 443 rule", func(t *testing.T) {
+		np := makeNP()
+		instance := &clawv1alpha1.Claw{
+			ObjectMeta: metav1.ObjectMeta{Name: "inst"},
+			Spec: clawv1alpha1.ClawSpec{
+				Credentials: []clawv1alpha1.CredentialSpec{
+					{Name: "dc", Channel: "discord"},
+					{Name: "tg", Channel: "telegram"},
+				},
+			},
+		}
+		require.NoError(t, injectChannelGatewayEgress([]*unstructured.Unstructured{np}, instance))
+
+		egress, _, _ := unstructured.NestedSlice(np.Object, "spec", "egress")
+		assert.Len(t, egress, 2, "should append exactly one rule even with multiple channels")
+	})
+}
+
 // --- Integration tests (envtest) ---
 
 // createClawInstanceWithMcpServers creates a Claw with credentials + MCP servers.
@@ -1111,6 +1187,87 @@ func TestEgressIntegrationExternalAndAdditional(t *testing.T) {
 		}, "gateway egress NP should be created")
 
 		assert.Len(t, np.Spec.Egress, 2, "should only have proxy + DNS rules (no MCP rules added)")
+	})
+
+	t.Run("channel credential adds port 443 egress rule to gateway NP", func(t *testing.T) {
+		t.Cleanup(func() { deleteAndWaitAllResources(t, namespace) })
+		ctx := context.Background()
+
+		aiSecret := createTestAPIKeySecret(aiModelSecret, namespace, aiModelSecretKey, aiModelSecretValue)
+		require.NoError(t, k8sClient.Create(ctx, aiSecret))
+
+		discordSecret := &corev1.Secret{
+			ObjectMeta: metav1.ObjectMeta{Name: "discord-token", Namespace: namespace},
+			Data:       map[string][]byte{"token": []byte("test-token")},
+		}
+		require.NoError(t, k8sClient.Create(ctx, discordSecret))
+
+		instance := &clawv1alpha1.Claw{
+			ObjectMeta: metav1.ObjectMeta{Name: testInstanceName, Namespace: namespace},
+			Spec: clawv1alpha1.ClawSpec{
+				Credentials: append(testCredentials(), clawv1alpha1.CredentialSpec{
+					Name:    "discord",
+					Channel: "discord",
+					SecretRef: []clawv1alpha1.SecretRefEntry{
+						{Name: "discord-token", Key: "token"},
+					},
+				}),
+			},
+		}
+		require.NoError(t, k8sClient.Create(ctx, instance))
+
+		reconciler := createClawReconciler()
+		reconcileClaw(t, ctx, reconciler, testInstanceName, namespace)
+
+		np := &netv1.NetworkPolicy{}
+		waitFor(t, timeout, interval, func() bool {
+			return k8sClient.Get(ctx, client.ObjectKey{
+				Name:      getEgressNetworkPolicyName(testInstanceName),
+				Namespace: namespace,
+			}, np) == nil
+		}, "gateway egress NP should be created")
+
+		found443 := false
+		for _, rule := range np.Spec.Egress {
+			if len(rule.To) == 0 {
+				for _, port := range rule.Ports {
+					if port.Port != nil && port.Port.IntValue() == 443 {
+						found443 = true
+					}
+				}
+			}
+		}
+		assert.True(t, found443, "gateway NP should have port 443 egress rule for channel companion domains")
+	})
+
+	t.Run("no channel credential does not add port 443 to gateway NP", func(t *testing.T) {
+		t.Cleanup(func() { deleteAndWaitAllResources(t, namespace) })
+		ctx := context.Background()
+
+		createClawInstance(t, ctx, testInstanceName, namespace)
+
+		reconciler := createClawReconciler()
+		reconcileClaw(t, ctx, reconciler, testInstanceName, namespace)
+
+		np := &netv1.NetworkPolicy{}
+		waitFor(t, timeout, interval, func() bool {
+			return k8sClient.Get(ctx, client.ObjectKey{
+				Name:      getEgressNetworkPolicyName(testInstanceName),
+				Namespace: namespace,
+			}, np) == nil
+		}, "gateway egress NP should be created")
+
+		found443 := false
+		for _, rule := range np.Spec.Egress {
+			if len(rule.To) == 0 {
+				for _, port := range rule.Ports {
+					if port.Port != nil && port.Port.IntValue() == 443 {
+						found443 = true
+					}
+				}
+			}
+		}
+		assert.False(t, found443, "gateway NP should NOT have port 443 when no channel credentials")
 	})
 
 	t.Run("credentialRef on in-cluster MCP with bypass on sets validation-failed condition", func(t *testing.T) {

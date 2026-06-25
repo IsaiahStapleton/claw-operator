@@ -879,6 +879,9 @@ func (r *ClawResourceReconciler) enrichConfigAndNetworkPolicy(
 	if err := injectAdditionalEgress(objects, instance); err != nil {
 		return fmt.Errorf("failed to inject additional egress rules: %w", err)
 	}
+	if err := injectChannelGatewayEgress(objects, instance); err != nil {
+		return fmt.Errorf("failed to inject channel gateway egress rules: %w", err)
+	}
 	if err := stampGatewayConfigHash(objects, instance.Name, effectivePlugins(instance)); err != nil {
 		return fmt.Errorf("failed to stamp gateway config hash: %w", err)
 	}
@@ -929,6 +932,9 @@ func (r *ClawResourceReconciler) configureDeployments(
 	}
 	if err := configureGatewayForMcpServers(objects, instance); err != nil {
 		return fmt.Errorf("failed to configure gateway for MCP servers: %w", err)
+	}
+	if err := configureGatewayForChannels(objects, instance); err != nil {
+		return fmt.Errorf("failed to configure gateway for channels: %w", err)
 	}
 	if err := configureClawDeploymentForAuth(objects, instance); err != nil {
 		return fmt.Errorf("failed to configure gateway for auth: %w", err)

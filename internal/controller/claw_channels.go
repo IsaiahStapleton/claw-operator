@@ -27,6 +27,7 @@ import (
 type channelSecretRole struct {
 	Role        string
 	Placeholder string
+	GatewayEnv  string // env var name to mount the real secret on the gateway container
 }
 
 // channelDefault holds the inferred proxy and config defaults for a known messaging channel.
@@ -59,7 +60,7 @@ var knownChannels = map[string]channelDefault{
 		Domain:    "api.telegram.org",
 		PathToken: &clawv1alpha1.PathTokenConfig{Prefix: "/bot"},
 		SecretRoles: []channelSecretRole{
-			{Placeholder: "placeholder"},
+			{Placeholder: "placeholder", GatewayEnv: "CHANNEL_TELEGRAM_TOKEN"},
 		},
 		ConfigBase: map[string]any{
 			"botToken":  "placeholder",
@@ -76,10 +77,10 @@ var knownChannels = map[string]channelDefault{
 			"cdn.discordapp.com",
 		},
 		SecretRoles: []channelSecretRole{
-			{Placeholder: "placeholder"},
+			{Placeholder: "placeholder", GatewayEnv: "CHANNEL_DISCORD_TOKEN"},
 		},
 		ConfigBase: map[string]any{
-			"botToken": "placeholder",
+			"token": "placeholder",
 		},
 	},
 	"slack": {
@@ -89,8 +90,8 @@ var knownChannels = map[string]channelDefault{
 			".slack.com",
 		},
 		SecretRoles: []channelSecretRole{
-			{Role: "botToken", Placeholder: "xoxb-placeholder"},
-			{Role: "appToken", Placeholder: "xapp-placeholder"},
+			{Role: "botToken", Placeholder: "xoxb-placeholder", GatewayEnv: "CHANNEL_SLACK_BOT_TOKEN"},
+			{Role: "appToken", Placeholder: "xapp-placeholder", GatewayEnv: "CHANNEL_SLACK_APP_TOKEN"},
 		},
 		ConfigBase: map[string]any{
 			"botToken": "xoxb-placeholder",
