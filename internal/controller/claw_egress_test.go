@@ -1189,6 +1189,47 @@ func TestEgressIntegrationExternalAndAdditional(t *testing.T) {
 		assert.Len(t, np.Spec.Egress, 2, "should only have proxy + DNS rules (no MCP rules added)")
 	})
 
+	t.Run("credentialRef on in-cluster MCP with bypass on sets validation-failed condition", func(t *testing.T) {
+		t.Cleanup(func() { deleteAndWaitAllResources(t, namespace) })
+		ctx := context.Background()
+
+		secret := createTestAPIKeySecret(aiModelSecret, namespace, aiModelSecretKey, aiModelSecretValue)
+		require.NoError(t, k8sClient.Create(ctx, secret))
+
+		instance := &clawv1alpha1.Claw{
+			ObjectMeta: metav1.ObjectMeta{Name: testInstanceName, Namespace: namespace},
+			Spec: clawv1alpha1.ClawSpec{
+				Credentials: testCredentials(),
+				Network:     &clawv1alpha1.NetworkSpec{InClusterBypass: ptr.To(true)},
+				McpServers: map[string]clawv1alpha1.McpServerSpec{
+					"in-cluster": {URL: "http://mcp-server:9001/mcp", CredentialRef: "my-model"},
+				},
+			},
+		}
+		require.NoError(t, k8sClient.Create(ctx, instance))
+
+		reconciler := createClawReconciler()
+		_, err := reconciler.Reconcile(ctx, ctrl.Request{
+			NamespacedName: client.ObjectKey{Name: testInstanceName, Namespace: namespace},
+		})
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "credentialRef")
+
+		updated := &clawv1alpha1.Claw{}
+		require.NoError(t, k8sClient.Get(ctx, client.ObjectKey{
+			Name: testInstanceName, Namespace: namespace,
+		}, updated))
+
+		cond := meta.FindStatusCondition(updated.Status.Conditions,
+			clawv1alpha1.ConditionTypeMcpServersConfigured)
+		require.NotNil(t, cond, "McpServersConfigured condition should be set")
+		assert.Equal(t, metav1.ConditionFalse, cond.Status)
+		assert.Equal(t, clawv1alpha1.ConditionReasonValidationFailed, cond.Reason)
+		assert.Contains(t, cond.Message, "credentialRef")
+	})
+}
+
+func TestEgressIntegrationChannels(t *testing.T) {
 	t.Run("channel credential adds port 443 egress rule to gateway NP", func(t *testing.T) {
 		t.Cleanup(func() { deleteAndWaitAllResources(t, namespace) })
 		ctx := context.Background()
@@ -1268,44 +1309,5 @@ func TestEgressIntegrationExternalAndAdditional(t *testing.T) {
 			}
 		}
 		assert.False(t, found443, "gateway NP should NOT have port 443 when no channel credentials")
-	})
-
-	t.Run("credentialRef on in-cluster MCP with bypass on sets validation-failed condition", func(t *testing.T) {
-		t.Cleanup(func() { deleteAndWaitAllResources(t, namespace) })
-		ctx := context.Background()
-
-		secret := createTestAPIKeySecret(aiModelSecret, namespace, aiModelSecretKey, aiModelSecretValue)
-		require.NoError(t, k8sClient.Create(ctx, secret))
-
-		instance := &clawv1alpha1.Claw{
-			ObjectMeta: metav1.ObjectMeta{Name: testInstanceName, Namespace: namespace},
-			Spec: clawv1alpha1.ClawSpec{
-				Credentials: testCredentials(),
-				Network:     &clawv1alpha1.NetworkSpec{InClusterBypass: ptr.To(true)},
-				McpServers: map[string]clawv1alpha1.McpServerSpec{
-					"in-cluster": {URL: "http://mcp-server:9001/mcp", CredentialRef: "my-model"},
-				},
-			},
-		}
-		require.NoError(t, k8sClient.Create(ctx, instance))
-
-		reconciler := createClawReconciler()
-		_, err := reconciler.Reconcile(ctx, ctrl.Request{
-			NamespacedName: client.ObjectKey{Name: testInstanceName, Namespace: namespace},
-		})
-		require.Error(t, err)
-		assert.Contains(t, err.Error(), "credentialRef")
-
-		updated := &clawv1alpha1.Claw{}
-		require.NoError(t, k8sClient.Get(ctx, client.ObjectKey{
-			Name: testInstanceName, Namespace: namespace,
-		}, updated))
-
-		cond := meta.FindStatusCondition(updated.Status.Conditions,
-			clawv1alpha1.ConditionTypeMcpServersConfigured)
-		require.NotNil(t, cond, "McpServersConfigured condition should be set")
-		assert.Equal(t, metav1.ConditionFalse, cond.Status)
-		assert.Equal(t, clawv1alpha1.ConditionReasonValidationFailed, cond.Reason)
-		assert.Contains(t, cond.Message, "credentialRef")
 	})
 }
