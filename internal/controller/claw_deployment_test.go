@@ -327,6 +327,7 @@ func TestClawImageOverrideIntegration(t *testing.T) {
 		assert.Equal(t, OpenClawImageBase+":"+DefaultOpenClawVersion, gateway.Image,
 			"should use default version when spec.version is empty")
 	})
+
 }
 
 // --- Vertex AI deployment configuration tests ---
@@ -1726,16 +1727,16 @@ func TestConfigureGatewayForMcpServers(t *testing.T) {
 }
 
 func TestConfigureGatewayForChannels(t *testing.T) {
-	makeInitConfigDeployment := func() []*unstructured.Unstructured {
+	makeGatewayDeployment := func() []*unstructured.Unstructured {
 		dep := &unstructured.Unstructured{}
 		dep.SetKind(DeploymentKind)
 		dep.SetName(getClawDeploymentName(testInstanceName))
 		dep.Object["spec"] = map[string]any{
 			"template": map[string]any{
 				"spec": map[string]any{
-					"initContainers": []any{
+					"containers": []any{
 						map[string]any{
-							"name": ClawInitConfigContainerName,
+							"name": ClawGatewayContainerName,
 							"env":  []any{},
 						},
 					},
@@ -1745,8 +1746,8 @@ func TestConfigureGatewayForChannels(t *testing.T) {
 		return []*unstructured.Unstructured{dep}
 	}
 
-	t.Run("should add discord token env var and secret map", func(t *testing.T) {
-		objects := makeInitConfigDeployment()
+	t.Run("should add discord token env var", func(t *testing.T) {
+		objects := makeGatewayDeployment()
 		instance := &clawv1alpha1.Claw{}
 		instance.Name = testInstanceName
 		instance.Spec.Credentials = []clawv1alpha1.CredentialSpec{
@@ -1761,27 +1762,22 @@ func TestConfigureGatewayForChannels(t *testing.T) {
 
 		require.NoError(t, configureGatewayForChannels(objects, instance))
 
-		initContainers, _, _ := unstructured.NestedSlice(objects[0].Object, "spec", "template", "spec", "initContainers")
-		container := initContainers[0].(map[string]any)
+		containers, _, _ := unstructured.NestedSlice(objects[0].Object, "spec", "template", "spec", "containers")
+		container := containers[0].(map[string]any)
 		envVars := container["env"].([]any)
 
-		require.Len(t, envVars, 2) // CHANNEL_DISCORD_TOKEN + CHANNEL_SECRET_MAP
+		require.Len(t, envVars, 1)
 
 		tokenEnv := envVars[0].(map[string]any)
-		assert.Equal(t, "CHANNEL_DISCORD_TOKEN", tokenEnv["name"])
+		assert.Equal(t, "OPENCLAW_CHANNEL_DISCORD_BOT_TOKEN", tokenEnv["name"])
 		valueFrom := tokenEnv["valueFrom"].(map[string]any)
 		secretKeyRef := valueFrom["secretKeyRef"].(map[string]any)
 		assert.Equal(t, "discord-bot-secret", secretKeyRef["name"])
 		assert.Equal(t, "token", secretKeyRef["key"])
-
-		mapEnv := envVars[1].(map[string]any)
-		assert.Equal(t, "CHANNEL_SECRET_MAP", mapEnv["name"])
-		assert.Contains(t, mapEnv["value"], "CHANNEL_DISCORD_TOKEN")
-		assert.Contains(t, mapEnv["value"], `"channel":"discord"`)
 	})
 
 	t.Run("should be no-op when no channel credentials", func(t *testing.T) {
-		objects := makeInitConfigDeployment()
+		objects := makeGatewayDeployment()
 		instance := &clawv1alpha1.Claw{}
 		instance.Name = testInstanceName
 		instance.Spec.Credentials = []clawv1alpha1.CredentialSpec{
@@ -1796,14 +1792,14 @@ func TestConfigureGatewayForChannels(t *testing.T) {
 
 		require.NoError(t, configureGatewayForChannels(objects, instance))
 
-		initContainers, _, _ := unstructured.NestedSlice(objects[0].Object, "spec", "template", "spec", "initContainers")
-		container := initContainers[0].(map[string]any)
+		containers, _, _ := unstructured.NestedSlice(objects[0].Object, "spec", "template", "spec", "containers")
+		container := containers[0].(map[string]any)
 		envVars := container["env"].([]any)
 		assert.Empty(t, envVars)
 	})
 
 	t.Run("should handle slack with multiple secret roles", func(t *testing.T) {
-		objects := makeInitConfigDeployment()
+		objects := makeGatewayDeployment()
 		instance := &clawv1alpha1.Claw{}
 		instance.Name = testInstanceName
 		instance.Spec.Credentials = []clawv1alpha1.CredentialSpec{
@@ -1819,21 +1815,115 @@ func TestConfigureGatewayForChannels(t *testing.T) {
 
 		require.NoError(t, configureGatewayForChannels(objects, instance))
 
-		initContainers, _, _ := unstructured.NestedSlice(objects[0].Object, "spec", "template", "spec", "initContainers")
-		container := initContainers[0].(map[string]any)
+		containers, _, _ := unstructured.NestedSlice(objects[0].Object, "spec", "template", "spec", "containers")
+		container := containers[0].(map[string]any)
 		envVars := container["env"].([]any)
 
-		// 2 secret env vars + CHANNEL_SECRET_MAP
-		require.Len(t, envVars, 3)
+		require.Len(t, envVars, 2)
 
 		botEnv := envVars[0].(map[string]any)
-		assert.Equal(t, "CHANNEL_SLACK_BOT_TOKEN", botEnv["name"])
+		assert.Equal(t, "OPENCLAW_CHANNEL_SLACK_BOT_TOKEN", botEnv["name"])
 
 		appEnv := envVars[1].(map[string]any)
-		assert.Equal(t, "CHANNEL_SLACK_APP_TOKEN", appEnv["name"])
+		assert.Equal(t, "OPENCLAW_CHANNEL_SLACK_APP_TOKEN", appEnv["name"])
+	})
 
-		mapEnv := envVars[2].(map[string]any)
-		assert.Equal(t, "CHANNEL_SECRET_MAP", mapEnv["name"])
+	t.Run("should reject duplicate channel credentials", func(t *testing.T) {
+		objects := makeGatewayDeployment()
+		instance := &clawv1alpha1.Claw{}
+		instance.Name = testInstanceName
+		instance.Spec.Credentials = []clawv1alpha1.CredentialSpec{
+			{
+				Name:    "discord-one",
+				Channel: "discord",
+				SecretRef: []clawv1alpha1.SecretRefEntry{
+					{Name: "discord-one-secret", Key: "token"},
+				},
+			},
+			{
+				Name:    "discord-two",
+				Channel: "discord",
+				SecretRef: []clawv1alpha1.SecretRefEntry{
+					{Name: "discord-two-secret", Key: "token"},
+				},
+			},
+		}
+
+		err := configureGatewayForChannels(objects, instance)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(),
+			`credentials "discord-one" and "discord-two" declare duplicate channel "discord"`)
+	})
+
+	t.Run("should stamp channel secret resource versions on gateway", func(t *testing.T) {
+		t.Cleanup(func() { deleteAndWaitAllResources(t, namespace) })
+		ctx := context.Background()
+
+		secret := &corev1.Secret{
+			ObjectMeta: metav1.ObjectMeta{Name: "discord-bot-secret", Namespace: namespace},
+			Data:       map[string][]byte{"token": []byte("test-discord-token")},
+		}
+		require.NoError(t, k8sClient.Create(ctx, secret))
+
+		objects := makeGatewayDeployment()
+		instance := &clawv1alpha1.Claw{
+			ObjectMeta: metav1.ObjectMeta{Name: testInstanceName, Namespace: namespace},
+			Spec: clawv1alpha1.ClawSpec{
+				Credentials: []clawv1alpha1.CredentialSpec{
+					{
+						Name:    "discord",
+						Channel: "discord",
+						SecretRef: []clawv1alpha1.SecretRefEntry{
+							{Name: "discord-bot-secret", Key: "token"},
+						},
+					},
+				},
+			},
+		}
+
+		reconciler := createClawReconciler()
+		require.NoError(t, reconciler.stampChannelSecretVersionAnnotation(ctx, objects, instance))
+
+		annotations, _, _ := unstructured.NestedStringMap(objects[0].Object, "spec", "template", "metadata", "annotations")
+		annotationKey := clawv1alpha1.AnnotationPrefixSecretVersion +
+			"channel-" + mcpAnnotationKey("discord", "OPENCLAW_CHANNEL_DISCORD_BOT_TOKEN") +
+			clawv1alpha1.AnnotationSuffixSecretVersion
+		assert.Equal(t, secret.ResourceVersion, annotations[annotationKey])
+	})
+
+	t.Run("should reject existing channel env var collision", func(t *testing.T) {
+		objects := makeGatewayDeployment()
+		containers, _, _ := unstructured.NestedSlice(objects[0].Object, "spec", "template", "spec", "containers")
+		container := containers[0].(map[string]any)
+		container["env"] = []any{
+			map[string]any{
+				"name": "OPENCLAW_CHANNEL_DISCORD_BOT_TOKEN",
+				"valueFrom": map[string]any{
+					"secretKeyRef": map[string]any{
+						"name": "different-secret",
+						"key":  "token",
+					},
+				},
+			},
+		}
+		containers[0] = container
+		require.NoError(t, unstructured.SetNestedSlice(objects[0].Object, containers, "spec", "template", "spec", "containers"))
+
+		instance := &clawv1alpha1.Claw{}
+		instance.Name = testInstanceName
+		instance.Spec.Credentials = []clawv1alpha1.CredentialSpec{
+			{
+				Name:    "discord",
+				Channel: "discord",
+				SecretRef: []clawv1alpha1.SecretRefEntry{
+					{Name: "discord-bot-secret", Key: "token"},
+				},
+			},
+		}
+
+		err := configureGatewayForChannels(objects, instance)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "OPENCLAW_CHANNEL_DISCORD_BOT_TOKEN")
 	})
 }
 
