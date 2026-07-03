@@ -877,6 +877,71 @@ spec:
                 items:
                   type: string
                 type: array
+              repoAccess:
+                description: RepoAccess configures repository access for agent runtime
+                  commands.
+                properties:
+                  github:
+                    description: GitHub configures GitHub API and Git HTTPS access
+                      using a user PAT.
+                    properties:
+                      allowedRepositories:
+                        description: |-
+                          AllowedRepositories restricts Git HTTPS access to owner/repo entries.
+                          If empty, all github.com paths are allowed.
+                        items:
+                          type: string
+                        type: array
+                      enableApiProxy:
+                        default: true
+                        description: |-
+                          EnableAPIProxy configures proxy bearer injection for api.github.com.
+                          Defaults to true.
+                        type: boolean
+                      enableGitHttps:
+                        default: true
+                        description: |-
+                          EnableGitHTTPS configures proxy Basic auth injection for github.com Git.
+                          Defaults to true.
+                        type: boolean
+                      envNames:
+                        description: |-
+                          EnvNames overrides the env var names used when exposeEnv is true.
+                          Defaults to GH_TOKEN and GITHUB_TOKEN.
+                        items:
+                          type: string
+                        type: array
+                      exposeEnv:
+                        description: |-
+                          ExposeEnv mounts the PAT into the gateway for tools that require env vars.
+                          Defaults to false so normal git HTTPS can use proxy-managed credentials.
+                        type: boolean
+                      secretRef:
+                        description: SecretRef references a Secret key holding a GitHub
+                          PAT.
+                        properties:
+                          key:
+                            description: Key is the key in the Secret's data map
+                            minLength: 1
+                            type: string
+                          name:
+                            description: Name is the name of the Secret
+                            minLength: 1
+                            type: string
+                          role:
+                            description: |-
+                              Role distinguishes multiple secrets for the same credential.
+                              Required when multiple secretRef entries are present (e.g., Slack botToken/appToken).
+                            maxLength: 63
+                            type: string
+                        required:
+                        - key
+                        - name
+                        type: object
+                    required:
+                    - secretRef
+                    type: object
+                type: object
               restrictions:
                 description: |-
                   Restrictions configures runtime restrictions that limit agent and

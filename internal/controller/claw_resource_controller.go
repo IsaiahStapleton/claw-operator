@@ -515,6 +515,16 @@ func (r *ClawResourceReconciler) Reconcile(ctx context.Context, req ctrl.Request
 		return ctrl.Result{}, err
 	}
 
+	if err := r.validateRepoAccessSecrets(ctx, instance); err != nil {
+		logger.Error(err, "Repo access validation failed")
+		setCondition(instance, clawv1alpha1.ConditionTypeReady, metav1.ConditionFalse,
+			clawv1alpha1.ConditionReasonValidationFailed, err.Error())
+		if statusErr := r.Status().Update(ctx, instance); statusErr != nil {
+			logger.Error(statusErr, "Failed to update status after repo access validation failure")
+		}
+		return ctrl.Result{}, err
+	}
+
 	// Validate readOnly paths (if agentFiles.readOnly is set)
 	if instance.Spec.AgentFiles != nil && len(instance.Spec.AgentFiles.ReadOnly) > 0 {
 		if err := validateReadOnlyPaths(instance.Spec.AgentFiles.ReadOnly); err != nil {
@@ -613,6 +623,9 @@ func (r *ClawResourceReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	// Stamp MCP envFrom Secret versions on gateway deployment for rollout
 	if err := r.stampMcpSecretVersionAnnotation(ctx, objects, instance); err != nil {
 		return ctrl.Result{}, fmt.Errorf("failed to stamp MCP secret version annotations: %w", err)
+	}
+	if err := r.stampRepoAccessSecretVersionAnnotation(ctx, objects, instance); err != nil {
+		return ctrl.Result{}, fmt.Errorf("failed to stamp repo access secret version annotations: %w", err)
 	}
 
 	// Stamp channel Secret versions on gateway deployment for rollout
@@ -936,6 +949,9 @@ func (r *ClawResourceReconciler) configureDeployments(
 	}
 	if err := configureGatewayForChannels(objects, instance); err != nil {
 		return fmt.Errorf("failed to configure gateway for channels: %w", err)
+	}
+	if err := configureGatewayForRepoAccess(objects, instance); err != nil {
+		return fmt.Errorf("failed to configure gateway for repo access: %w", err)
 	}
 	if err := configureClawDeploymentForAuth(objects, instance); err != nil {
 		return fmt.Errorf("failed to configure gateway for auth: %w", err)
@@ -1712,6 +1728,9 @@ func clawReferencesSecret(instance clawv1alpha1.Claw, secretName string) bool {
 		if instance.Spec.AgentFiles.Git.SecretRef.Name == secretName {
 			return true
 		}
+	}
+	if gh := githubRepoAccess(&instance); gh != nil && gh.SecretRef.Name == secretName {
+		return true
 	}
 	return false
 }

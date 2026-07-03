@@ -258,6 +258,7 @@ func (r *ClawResourceReconciler) resolveCredentials(ctx context.Context, instanc
 			if cred.APIKey == nil {
 				errs = append(errs, fmt.Errorf("credential %q: apiKey config is required for type apiKey", cred.Name))
 			}
+		case clawv1alpha1.CredentialTypeBearer:
 		case clawv1alpha1.CredentialTypeGCP:
 			if cred.GCP == nil {
 				errs = append(errs, fmt.Errorf("credential %q: gcp config is required for type gcp", cred.Name))
@@ -283,6 +284,12 @@ func (r *ClawResourceReconciler) resolveCredentials(ctx context.Context, instanc
 		}
 		credNames[cred.Name] = true
 	}
+
+	for _, cred := range githubRepoAccessCredentials(instance) {
+		resolved = append(resolved, resolvedCredential{CredentialSpec: cred})
+		credNames[cred.Name] = true
+	}
+
 	seenCustomProviders := map[string]bool{}
 	for _, cp := range instance.Spec.CustomProviders {
 		if seenCustomProviders[cp.Name] {

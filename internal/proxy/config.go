@@ -31,6 +31,7 @@ type Route struct {
 	Injector       string            `json:"injector"`
 	Header         string            `json:"header,omitempty"`
 	ValuePrefix    string            `json:"valuePrefix,omitempty"`
+	BasicUsername  string            `json:"basicUsername,omitempty"`
 	EnvVar         string            `json:"envVar,omitempty"`
 	SAFilePath     string            `json:"saFilePath,omitempty"`
 	GCPProject     string            `json:"gcpProject,omitempty"`

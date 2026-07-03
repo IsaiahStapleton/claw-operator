@@ -60,6 +60,8 @@ func NewInjector(route *Route) (Injector, error) {
 		return NewAPIKeyInjector(route)
 	case "bearer":
 		return NewBearerInjector(route)
+	case "basic":
+		return NewBasicInjector(route)
 	case injectorGCP:
 		return NewGCPInjector(route)
 	case "none":
