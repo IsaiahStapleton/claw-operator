@@ -285,10 +285,12 @@ func buildCredentialRoute(cred clawv1alpha1.CredentialSpec) proxyRoute {
 	case clawv1alpha1.CredentialTypeBearer:
 		route.Injector = injectorBearer
 		route.EnvVar = credEnvVarName(cred.Name)
-	case credentialTypeBasic:
+	case clawv1alpha1.CredentialTypeBasic:
 		route.Injector = injectorBasic
 		route.EnvVar = credEnvVarName(cred.Name)
-		route.BasicUsername = githubBasicUsername
+		if cred.Basic != nil {
+			route.BasicUsername = cred.Basic.Username
+		}
 	case clawv1alpha1.CredentialTypeGCP:
 		route.Injector = injectorGCP
 		route.SAFilePath = "/etc/proxy/credentials/" + cred.Name + "/sa-key.json"
@@ -536,7 +538,7 @@ func configureProxyForCredentials(objects []*unstructured.Unstructured, instance
 			ref := proxySecretForCredential(cred)
 			switch cred.Type {
 			case clawv1alpha1.CredentialTypeAPIKey, clawv1alpha1.CredentialTypeBearer,
-				credentialTypeBasic,
+				clawv1alpha1.CredentialTypeBasic,
 				clawv1alpha1.CredentialTypePathToken, clawv1alpha1.CredentialTypeOAuth2:
 				if ref == nil {
 					continue
@@ -645,18 +647,15 @@ func stampProxyConfigHash(objects []*unstructured.Unstructured, instance *clawv1
 // changes (without any Claw CR spec change), the pod template differs and Kubernetes
 // triggers a rolling update.
 func (r *ClawResourceReconciler) stampSecretVersionAnnotation(
-	ctx context.Context,
 	objects []*unstructured.Unstructured,
 	instance *clawv1alpha1.Claw,
+	secrets *userSecretCache,
 ) error {
 	versions := make(map[string]string)
 	for _, cred := range instance.Spec.Credentials {
 		for _, ref := range cred.SecretRef {
-			secret := &corev1.Secret{}
-			if err := r.UserSecretReader.Get(ctx, client.ObjectKey{
-				Namespace: instance.Namespace,
-				Name:      ref.Name,
-			}, secret); err != nil {
+			secret, err := secrets.get(ref.Name)
+			if err != nil {
 				return fmt.Errorf("failed to get Secret %q for credential %q: %w", ref.Name, cred.Name, err)
 			}
 			key := cred.Name
@@ -668,11 +667,8 @@ func (r *ClawResourceReconciler) stampSecretVersionAnnotation(
 	}
 
 	if ws := instance.Spec.WebSearch; ws != nil && ws.SecretRef != nil {
-		secret := &corev1.Secret{}
-		if err := r.UserSecretReader.Get(ctx, client.ObjectKey{
-			Namespace: instance.Namespace,
-			Name:      ws.SecretRef.Name,
-		}, secret); err != nil {
+		secret, err := secrets.get(ws.SecretRef.Name)
+		if err != nil {
 			return fmt.Errorf("failed to get Secret %q for web search: %w", ws.SecretRef.Name, err)
 		}
 		versions[webSearchCredPrefix] = secret.ResourceVersion
@@ -680,11 +676,8 @@ func (r *ClawResourceReconciler) stampSecretVersionAnnotation(
 
 	if gh := githubRepoAccess(instance); gh != nil &&
 		(repoAccessEnabled(gh.EnableAPIProxy) || repoAccessEnabled(gh.EnableGitHTTPS)) {
-		secret := &corev1.Secret{}
-		if err := r.UserSecretReader.Get(ctx, client.ObjectKey{
-			Namespace: instance.Namespace,
-			Name:      gh.SecretRef.Name,
-		}, secret); err != nil {
+		secret, err := secrets.get(gh.SecretRef.Name)
+		if err != nil {
 			return fmt.Errorf("failed to get Secret %q for repo access: %w", gh.SecretRef.Name, err)
 		}
 		versions["repo-access-github"] = secret.ResourceVersion

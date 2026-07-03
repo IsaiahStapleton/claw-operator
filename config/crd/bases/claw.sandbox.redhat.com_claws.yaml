@@ -252,6 +252,18 @@ spec:
                       required:
                       - header
                       type: object
+                    basic:
+                      description: Basic configures HTTP Basic authentication. Required
+                        when type is "basic".
+                      properties:
+                        username:
+                          description: Username is combined with the secret value
+                            as username:password before Base64 encoding.
+                          minLength: 1
+                          type: string
+                      required:
+                      - username
+                      type: object
                     channel:
                       description: |-
                         Channel declares this credential as a messaging channel integration.
@@ -377,6 +389,7 @@ spec:
                       enum:
                       - apiKey
                       - bearer
+                      - basic
                       - gcp
                       - pathToken
                       - oauth2
@@ -403,6 +416,8 @@ spec:
                     rule: '!has(self.type) || self.type != ''apiKey'' || has(self.apiKey)
                       || (has(self.provider) && self.provider in [''google'', ''anthropic''])
                       || has(self.channel)'
+                  - message: basic config is required when type is basic
+                    rule: '!has(self.type) || self.type != ''basic'' || has(self.basic)'
                   - message: gcp config is required when type is gcp without inferred
                       defaults
                     rule: '!has(self.type) || self.type != ''gcp'' || has(self.gcp)

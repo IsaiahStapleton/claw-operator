@@ -252,25 +252,8 @@ func (r *ClawResourceReconciler) resolveCredentials(ctx context.Context, instanc
 			}
 		}
 
-		// Type-specific validation (defense-in-depth beyond CEL)
-		switch cred.Type {
-		case clawv1alpha1.CredentialTypeAPIKey:
-			if cred.APIKey == nil {
-				errs = append(errs, fmt.Errorf("credential %q: apiKey config is required for type apiKey", cred.Name))
-			}
-		case clawv1alpha1.CredentialTypeBearer:
-		case clawv1alpha1.CredentialTypeGCP:
-			if cred.GCP == nil {
-				errs = append(errs, fmt.Errorf("credential %q: gcp config is required for type gcp", cred.Name))
-			}
-		case clawv1alpha1.CredentialTypePathToken:
-			if cred.PathToken == nil {
-				errs = append(errs, fmt.Errorf("credential %q: pathToken config is required for type pathToken", cred.Name))
-			}
-		case clawv1alpha1.CredentialTypeOAuth2:
-			if cred.OAuth2 == nil {
-				errs = append(errs, fmt.Errorf("credential %q: oauth2 config is required for type oauth2", cred.Name))
-			}
+		if err := validateCredentialTypeConfig(cred); err != nil {
+			errs = append(errs, err)
 		}
 
 		resolved = append(resolved, rc)
@@ -313,6 +296,33 @@ func (r *ClawResourceReconciler) resolveCredentials(ctx context.Context, instanc
 		return nil, fmt.Errorf("credential validation failed: %w", errors.Join(errs...))
 	}
 	return resolved, nil
+}
+
+func validateCredentialTypeConfig(cred clawv1alpha1.CredentialSpec) error {
+	switch cred.Type {
+	case clawv1alpha1.CredentialTypeAPIKey:
+		if cred.APIKey == nil {
+			return fmt.Errorf("credential %q: apiKey config is required for type apiKey", cred.Name)
+		}
+	case clawv1alpha1.CredentialTypeBearer:
+	case clawv1alpha1.CredentialTypeBasic:
+		if cred.Basic == nil {
+			return fmt.Errorf("credential %q: basic config is required for type basic", cred.Name)
+		}
+	case clawv1alpha1.CredentialTypeGCP:
+		if cred.GCP == nil {
+			return fmt.Errorf("credential %q: gcp config is required for type gcp", cred.Name)
+		}
+	case clawv1alpha1.CredentialTypePathToken:
+		if cred.PathToken == nil {
+			return fmt.Errorf("credential %q: pathToken config is required for type pathToken", cred.Name)
+		}
+	case clawv1alpha1.CredentialTypeOAuth2:
+		if cred.OAuth2 == nil {
+			return fmt.Errorf("credential %q: oauth2 config is required for type oauth2", cred.Name)
+		}
+	}
+	return nil
 }
 
 // parseAndValidateKubeconfig parses kubeconfig bytes and validates that all users

@@ -27,84 +27,137 @@ import (
 	clawv1alpha1 "github.com/codeready-toolchain/claw-operator/api/v1alpha1"
 )
 
-func TestGitHubRepoAccessCredentials(t *testing.T) {
-	instance := &clawv1alpha1.Claw{}
-	instance.Spec.RepoAccess = &clawv1alpha1.RepoAccessSpec{
-		GitHub: &clawv1alpha1.GitHubRepoAccessSpec{
-			SecretRef:           clawv1alpha1.SecretRefEntry{Name: "github-pat", Key: "token"},
-			AllowedRepositories: []string{"sallyom/clawboard"},
-		},
-	}
-
-	creds := githubRepoAccessCredentials(instance)
-	require.Len(t, creds, 2)
-
-	assert.Equal(t, githubAPIRepoAccessCredentialName, creds[0].Name)
-	assert.Equal(t, clawv1alpha1.CredentialTypeBearer, creds[0].Type)
-	assert.Equal(t, githubAPIDomain, creds[0].Domain)
-	assert.Equal(t, []clawv1alpha1.SecretRefEntry{{Name: "github-pat", Key: "token"}}, creds[0].SecretRef)
-
-	assert.Equal(t, githubGitRepoAccessCredentialName, creds[1].Name)
-	assert.Equal(t, credentialTypeBasic, creds[1].Type)
-	assert.Equal(t, githubGitDomain, creds[1].Domain)
-	assert.Equal(t, []string{"/sallyom/clawboard/", "/sallyom/clawboard.git/"}, creds[1].AllowedPaths)
-}
-
-func TestGitHubRepoAccessSkipsExplicitGitHubCredentials(t *testing.T) {
-	instance := &clawv1alpha1.Claw{}
-	instance.Spec.Credentials = []clawv1alpha1.CredentialSpec{
-		{
-			Name:   "github",
-			Type:   clawv1alpha1.CredentialTypeBearer,
-			Domain: githubAPIDomain,
-		},
-	}
-	instance.Spec.RepoAccess = &clawv1alpha1.RepoAccessSpec{
-		GitHub: &clawv1alpha1.GitHubRepoAccessSpec{
-			SecretRef: clawv1alpha1.SecretRefEntry{Name: "github-pat", Key: "token"},
-		},
-	}
-
-	creds := githubRepoAccessCredentials(instance)
-	require.Len(t, creds, 1)
-	assert.Equal(t, githubGitRepoAccessCredentialName, creds[0].Name)
-}
-
-func TestGitHubRepoAccessProxyRoutes(t *testing.T) {
-	instance := &clawv1alpha1.Claw{}
-	instance.Spec.RepoAccess = &clawv1alpha1.RepoAccessSpec{
-		GitHub: &clawv1alpha1.GitHubRepoAccessSpec{
-			SecretRef: clawv1alpha1.SecretRefEntry{Name: "github-pat", Key: "token"},
-		},
-	}
-
-	raw, err := generateProxyConfig(toResolved(githubRepoAccessCredentials(instance)), nil, nil, nil)
-	require.NoError(t, err)
-
-	var cfg proxyConfig
-	require.NoError(t, json.Unmarshal(raw, &cfg))
-
-	var apiRoute, gitRoute *proxyRoute
-	for i := range cfg.Routes {
-		switch cfg.Routes[i].Domain {
-		case githubAPIDomain:
-			apiRoute = &cfg.Routes[i]
-		case githubGitDomain:
-			gitRoute = &cfg.Routes[i]
+func TestGitHubRepoAccess(t *testing.T) {
+	t.Run("credentials", func(t *testing.T) {
+		tests := []struct {
+			name              string
+			existing          []clawv1alpha1.CredentialSpec
+			allowedRepos      []string
+			wantNames         []string
+			wantGitCredential bool
+		}{
+			{
+				name:              "creates api and git credentials",
+				allowedRepos:      []string{"sallyom/clawboard"},
+				wantNames:         []string{githubAPIRepoAccessCredentialName, githubGitRepoAccessCredentialName},
+				wantGitCredential: true,
+			},
+			{
+				name: "skips explicit api github credential",
+				existing: []clawv1alpha1.CredentialSpec{{
+					Name:   "github",
+					Type:   clawv1alpha1.CredentialTypeBearer,
+					Domain: githubAPIDomain,
+				}},
+				wantNames:         []string{githubGitRepoAccessCredentialName},
+				wantGitCredential: true,
+			},
 		}
-	}
-	require.NotNil(t, apiRoute)
-	assert.Equal(t, injectorBearer, apiRoute.Injector)
-	assert.Equal(t, "CRED_GITHUB_API", apiRoute.EnvVar)
 
-	require.NotNil(t, gitRoute)
-	assert.Equal(t, injectorBasic, gitRoute.Injector)
-	assert.Equal(t, "CRED_GITHUB_GIT", gitRoute.EnvVar)
-	assert.Equal(t, githubBasicUsername, gitRoute.BasicUsername)
+		for _, tt := range tests {
+			t.Run(tt.name, func(t *testing.T) {
+				instance := &clawv1alpha1.Claw{}
+				instance.Spec.Credentials = tt.existing
+				instance.Spec.RepoAccess = &clawv1alpha1.RepoAccessSpec{
+					GitHub: &clawv1alpha1.GitHubRepoAccessSpec{
+						SecretRef:           clawv1alpha1.SecretRefEntry{Name: "github-pat", Key: "token"},
+						AllowedRepositories: tt.allowedRepos,
+					},
+				}
+
+				creds := githubRepoAccessCredentials(instance)
+				require.Len(t, creds, len(tt.wantNames))
+				for i, want := range tt.wantNames {
+					assert.Equal(t, want, creds[i].Name)
+				}
+				if len(creds) > 0 && creds[0].Name == githubAPIRepoAccessCredentialName {
+					assert.Equal(t, clawv1alpha1.CredentialTypeBearer, creds[0].Type)
+					assert.Equal(t, githubAPIDomain, creds[0].Domain)
+					assert.Equal(t, []clawv1alpha1.SecretRefEntry{{Name: "github-pat", Key: "token"}}, creds[0].SecretRef)
+				}
+				if tt.wantGitCredential {
+					gitCred := creds[len(creds)-1]
+					assert.Equal(t, githubGitRepoAccessCredentialName, gitCred.Name)
+					assert.Equal(t, clawv1alpha1.CredentialTypeBasic, gitCred.Type)
+					assert.Equal(t, githubGitDomain, gitCred.Domain)
+					require.NotNil(t, gitCred.Basic)
+					assert.Equal(t, githubBasicUsername, gitCred.Basic.Username)
+					if len(tt.allowedRepos) > 0 {
+						assert.Equal(t, []string{"/sallyom/clawboard/", "/sallyom/clawboard.git/"}, gitCred.AllowedPaths)
+					}
+				}
+			})
+		}
+	})
+
+	t.Run("proxy routes", func(t *testing.T) {
+		instance := &clawv1alpha1.Claw{}
+		instance.Spec.RepoAccess = &clawv1alpha1.RepoAccessSpec{
+			GitHub: &clawv1alpha1.GitHubRepoAccessSpec{
+				SecretRef: clawv1alpha1.SecretRefEntry{Name: "github-pat", Key: "token"},
+			},
+		}
+
+		raw, err := generateProxyConfig(toResolved(githubRepoAccessCredentials(instance)), nil, nil, nil)
+		require.NoError(t, err)
+
+		var cfg proxyConfig
+		require.NoError(t, json.Unmarshal(raw, &cfg))
+
+		apiRoute := findRouteByDomain(t, cfg.Routes, githubAPIDomain)
+		assert.Equal(t, injectorBearer, apiRoute.Injector)
+		assert.Equal(t, "CRED_GITHUB_API", apiRoute.EnvVar)
+
+		gitRoute := findRouteByDomain(t, cfg.Routes, githubGitDomain)
+		assert.Equal(t, injectorBasic, gitRoute.Injector)
+		assert.Equal(t, "CRED_GITHUB_GIT", gitRoute.EnvVar)
+		assert.Equal(t, githubBasicUsername, gitRoute.BasicUsername)
+	})
 }
 
 func TestConfigureGatewayForRepoAccess(t *testing.T) {
-	objects := []*unstructured.Unstructured{
+	tests := []struct {
+		name      string
+		exposeEnv bool
+		wantEnv   []string
+	}{
+		{name: "exposes GitHub tokens when requested", exposeEnv: true, wantEnv: []string{"GH_TOKEN", "GITHUB_TOKEN"}},
+		{name: "does not expose env by default"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			instance := &clawv1alpha1.Claw{}
+			instance.Name = testInstanceName
+			instance.Spec.RepoAccess = &clawv1alpha1.RepoAccessSpec{
+				GitHub: &clawv1alpha1.GitHubRepoAccessSpec{
+					SecretRef: clawv1alpha1.SecretRefEntry{Name: "github-pat", Key: "token"},
+					ExposeEnv: tt.exposeEnv,
+				},
+			}
+			if len(tt.wantEnv) == 0 {
+				assert.Empty(t, githubRepoAccessEnvFrom(instance))
+				return
+			}
+
+			objects := repoAccessGatewayObjects()
+			require.NoError(t, configureGatewayForRepoAccess(objects, instance))
+
+			containers, _, _ := unstructured.NestedSlice(objects[0].Object, "spec", "template", "spec", "containers")
+			envVars := containers[0].(map[string]any)["env"].([]any)
+			require.Len(t, envVars, len(tt.wantEnv))
+			for i, e := range envVars {
+				assert.Equal(t, tt.wantEnv[i], e.(map[string]any)["name"])
+				secretKeyRef := e.(map[string]any)["valueFrom"].(map[string]any)["secretKeyRef"].(map[string]any)
+				assert.Equal(t, "github-pat", secretKeyRef["name"])
+				assert.Equal(t, "token", secretKeyRef["key"])
+			}
+		})
+	}
+}
+
+func repoAccessGatewayObjects() []*unstructured.Unstructured {
+	return []*unstructured.Unstructured{
 		{
 			Object: map[string]any{
 				"kind": "Deployment",
@@ -126,36 +179,4 @@ func TestConfigureGatewayForRepoAccess(t *testing.T) {
 			},
 		},
 	}
-	instance := &clawv1alpha1.Claw{}
-	instance.Name = testInstanceName
-	instance.Spec.RepoAccess = &clawv1alpha1.RepoAccessSpec{
-		GitHub: &clawv1alpha1.GitHubRepoAccessSpec{
-			SecretRef: clawv1alpha1.SecretRefEntry{Name: "github-pat", Key: "token"},
-			ExposeEnv: true,
-		},
-	}
-
-	require.NoError(t, configureGatewayForRepoAccess(objects, instance))
-
-	containers, _, _ := unstructured.NestedSlice(objects[0].Object, "spec", "template", "spec", "containers")
-	envVars := containers[0].(map[string]any)["env"].([]any)
-	require.Len(t, envVars, 2)
-	assert.Equal(t, "GH_TOKEN", envVars[0].(map[string]any)["name"])
-	assert.Equal(t, "GITHUB_TOKEN", envVars[1].(map[string]any)["name"])
-	for _, e := range envVars {
-		secretKeyRef := e.(map[string]any)["valueFrom"].(map[string]any)["secretKeyRef"].(map[string]any)
-		assert.Equal(t, "github-pat", secretKeyRef["name"])
-		assert.Equal(t, "token", secretKeyRef["key"])
-	}
-}
-
-func TestConfigureGatewayForRepoAccessNoEnvByDefault(t *testing.T) {
-	instance := &clawv1alpha1.Claw{}
-	instance.Spec.RepoAccess = &clawv1alpha1.RepoAccessSpec{
-		GitHub: &clawv1alpha1.GitHubRepoAccessSpec{
-			SecretRef: clawv1alpha1.SecretRefEntry{Name: "github-pat", Key: "token"},
-		},
-	}
-
-	assert.Empty(t, githubRepoAccessEnvFrom(instance))
 }
