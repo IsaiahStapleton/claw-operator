@@ -24,12 +24,13 @@ import (
 )
 
 // CredentialType selects the credential injection mechanism used by the proxy.
-// +kubebuilder:validation:Enum=apiKey;bearer;gcp;pathToken;oauth2;none;kubernetes
+// +kubebuilder:validation:Enum=apiKey;bearer;basic;gcp;pathToken;oauth2;none;kubernetes
 type CredentialType string
 
 const (
 	CredentialTypeAPIKey     CredentialType = "apiKey"
 	CredentialTypeBearer     CredentialType = "bearer"
+	CredentialTypeBasic      CredentialType = "basic"
 	CredentialTypeGCP        CredentialType = "gcp"
 	CredentialTypePathToken  CredentialType = "pathToken"
 	CredentialTypeOAuth2     CredentialType = "oauth2"
@@ -144,6 +145,13 @@ type APIKeyConfig struct {
 	ValuePrefix string `json:"valuePrefix,omitempty"`
 }
 
+// BasicAuthConfig configures HTTP Basic authentication injection.
+type BasicAuthConfig struct {
+	// Username is combined with the secret value as username:password before Base64 encoding.
+	// +kubebuilder:validation:MinLength=1
+	Username string `json:"username"`
+}
+
 // GCPConfig configures GCP service account credential injection with OAuth2 token refresh.
 type GCPConfig struct {
 	// Project is the GCP project ID
@@ -182,6 +190,7 @@ type OAuth2Config struct {
 // +kubebuilder:validation:XValidation:rule="!has(self.provider) || !has(self.channel)",message="provider and channel are mutually exclusive"
 // +kubebuilder:validation:XValidation:rule="has(self.channel) || (has(self.type) && self.type == 'none') || has(self.secretRef)",message="secretRef is required unless type is none or channel is set"
 // +kubebuilder:validation:XValidation:rule="!has(self.type) || self.type != 'apiKey' || has(self.apiKey) || (has(self.provider) && self.provider in ['google', 'anthropic']) || has(self.channel)",message="apiKey config is required when type is apiKey without inferred defaults"
+// +kubebuilder:validation:XValidation:rule="!has(self.type) || self.type != 'basic' || has(self.basic)",message="basic config is required when type is basic"
 // +kubebuilder:validation:XValidation:rule="!has(self.type) || self.type != 'gcp' || has(self.gcp) || has(self.channel)",message="gcp config is required when type is gcp without inferred defaults"
 // +kubebuilder:validation:XValidation:rule="!has(self.type) || self.type != 'pathToken' || has(self.pathToken) || has(self.channel)",message="pathToken config is required when type is pathToken without inferred defaults"
 // +kubebuilder:validation:XValidation:rule="!has(self.type) || self.type != 'oauth2' || has(self.oauth2) || has(self.channel)",message="oauth2 config is required when type is oauth2 without inferred defaults"
@@ -218,6 +227,10 @@ type CredentialSpec struct {
 	// APIKey configures custom header injection. Required when type is "apiKey".
 	// +optional
 	APIKey *APIKeyConfig `json:"apiKey,omitempty"`
+
+	// Basic configures HTTP Basic authentication. Required when type is "basic".
+	// +optional
+	Basic *BasicAuthConfig `json:"basic,omitempty"`
 
 	// GCP configures GCP service account credential injection. Required when type is "gcp".
 	// +optional

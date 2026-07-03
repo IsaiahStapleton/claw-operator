@@ -17,15 +17,12 @@ limitations under the License.
 package controller
 
 import (
-	"context"
 	"crypto/sha256"
 	"fmt"
 	"strings"
 
-	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
-	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	clawv1alpha1 "github.com/codeready-toolchain/claw-operator/api/v1alpha1"
 )
@@ -36,7 +33,6 @@ const (
 	githubAPIDomain                   = "api.github.com"
 	githubGitDomain                   = "github.com"
 	githubBasicUsername               = "x-access-token"
-	credentialTypeBasic               = clawv1alpha1.CredentialType("basic")
 )
 
 func repoAccessEnabled(flag *bool) bool {
@@ -111,9 +107,10 @@ func githubRepoAccessCredentials(instance *clawv1alpha1.Claw) []clawv1alpha1.Cre
 		!hasCredentialDomain(instance.Spec.Credentials, githubGitDomain) {
 		credentials = append(credentials, clawv1alpha1.CredentialSpec{
 			Name:         githubGitRepoAccessCredentialName,
-			Type:         credentialTypeBasic,
+			Type:         clawv1alpha1.CredentialTypeBasic,
 			SecretRef:    []clawv1alpha1.SecretRefEntry{gh.SecretRef},
 			Domain:       githubGitDomain,
+			Basic:        &clawv1alpha1.BasicAuthConfig{Username: githubBasicUsername},
 			AllowedPaths: githubAllowedPaths(gh.AllowedRepositories),
 		})
 	}
@@ -145,16 +142,13 @@ func githubRepoAccessEnvFrom(instance *clawv1alpha1.Claw) []clawv1alpha1.McpEnvF
 	return envFrom
 }
 
-func (r *ClawResourceReconciler) validateRepoAccessSecrets(ctx context.Context, instance *clawv1alpha1.Claw) error {
+func (r *ClawResourceReconciler) validateRepoAccessSecrets(instance *clawv1alpha1.Claw, secrets *userSecretCache) error {
 	gh := githubRepoAccess(instance)
 	if gh == nil {
 		return nil
 	}
-	secret := &corev1.Secret{}
-	if err := r.UserSecretReader.Get(ctx, client.ObjectKey{
-		Namespace: instance.Namespace,
-		Name:      gh.SecretRef.Name,
-	}, secret); err != nil {
+	secret, err := secrets.get(gh.SecretRef.Name)
+	if err != nil {
 		if apierrors.IsNotFound(err) {
 			return fmt.Errorf("repoAccess.github: Secret %q not found", gh.SecretRef.Name)
 		}
@@ -218,19 +212,16 @@ func configureGatewayForRepoAccess(objects []*unstructured.Unstructured, instanc
 }
 
 func (r *ClawResourceReconciler) stampRepoAccessSecretVersionAnnotation(
-	ctx context.Context,
 	objects []*unstructured.Unstructured,
 	instance *clawv1alpha1.Claw,
+	secrets *userSecretCache,
 ) error {
 	gh := githubRepoAccess(instance)
 	if gh == nil || !gh.ExposeEnv {
 		return nil
 	}
-	secret := &corev1.Secret{}
-	if err := r.UserSecretReader.Get(ctx, client.ObjectKey{
-		Namespace: instance.Namespace,
-		Name:      gh.SecretRef.Name,
-	}, secret); err != nil {
+	secret, err := secrets.get(gh.SecretRef.Name)
+	if err != nil {
 		return fmt.Errorf("failed to get Secret %q for repo access env: %w", gh.SecretRef.Name, err)
 	}
 

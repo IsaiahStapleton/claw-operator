@@ -515,7 +515,8 @@ func (r *ClawResourceReconciler) Reconcile(ctx context.Context, req ctrl.Request
 		return ctrl.Result{}, err
 	}
 
-	if err := r.validateRepoAccessSecrets(ctx, instance); err != nil {
+	userSecrets := newUserSecretCache(ctx, r.UserSecretReader, instance.Namespace)
+	if err := r.validateRepoAccessSecrets(instance, userSecrets); err != nil {
 		logger.Error(err, "Repo access validation failed")
 		setCondition(instance, clawv1alpha1.ConditionTypeReady, metav1.ConditionFalse,
 			clawv1alpha1.ConditionReasonValidationFailed, err.Error())
@@ -616,7 +617,7 @@ func (r *ClawResourceReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	}
 
 	// Stamp Secret ResourceVersions to trigger rollout when Secret data changes
-	if err := r.stampSecretVersionAnnotation(ctx, objects, instance); err != nil {
+	if err := r.stampSecretVersionAnnotation(objects, instance, userSecrets); err != nil {
 		return ctrl.Result{}, fmt.Errorf("failed to stamp secret version annotations: %w", err)
 	}
 
@@ -624,7 +625,7 @@ func (r *ClawResourceReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	if err := r.stampMcpSecretVersionAnnotation(ctx, objects, instance); err != nil {
 		return ctrl.Result{}, fmt.Errorf("failed to stamp MCP secret version annotations: %w", err)
 	}
-	if err := r.stampRepoAccessSecretVersionAnnotation(ctx, objects, instance); err != nil {
+	if err := r.stampRepoAccessSecretVersionAnnotation(objects, instance, userSecrets); err != nil {
 		return ctrl.Result{}, fmt.Errorf("failed to stamp repo access secret version annotations: %w", err)
 	}
 

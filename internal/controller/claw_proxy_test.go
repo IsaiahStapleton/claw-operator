@@ -242,6 +242,31 @@ func TestGenerateProxyConfig(t *testing.T) {
 		assert.Equal(t, "org-123", route.DefaultHeaders["OpenAI-Organization"])
 	})
 
+	t.Run("should generate config with basic route username from credential", func(t *testing.T) {
+		credentials := []clawv1alpha1.CredentialSpec{
+			{
+				Name: "gitlab",
+				Type: clawv1alpha1.CredentialTypeBasic,
+				SecretRef: []clawv1alpha1.SecretRefEntry{{
+					Name: "secret",
+					Key:  "token",
+				}},
+				Domain: "gitlab.example.com",
+				Basic:  &clawv1alpha1.BasicAuthConfig{Username: "oauth2"},
+			},
+		}
+
+		data, err := generateProxyConfig(toResolved(credentials), nil, nil, nil)
+		require.NoError(t, err)
+
+		var cfg proxyConfig
+		require.NoError(t, json.Unmarshal(data, &cfg))
+		route := findRouteByDomain(t, cfg.Routes, "gitlab.example.com")
+		assert.Equal(t, "basic", route.Injector)
+		assert.Equal(t, "CRED_GITLAB", route.EnvVar)
+		assert.Equal(t, "oauth2", route.BasicUsername)
+	})
+
 	t.Run("should generate config with GCP route and Vertex AI gateway", func(t *testing.T) {
 		credentials := []clawv1alpha1.CredentialSpec{
 			{
