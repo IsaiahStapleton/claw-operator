@@ -14,9 +14,9 @@ The easiest way to try an OpenClaw instance managed by this operator is on the [
 The operator applies multiple layers of defense:
 
 - **OpenShift restricted SCC** -- each pod runs under the restricted SCC which enforces non-root UIDs, SELinux labels, seccomp `RuntimeDefault`, and blocks privilege escalation. All containers additionally drop all Linux capabilities and disable service account token mounting.
-- **Secret isolation** -- OpenClaw pods never see API keys or tokens. Credentials are stored in user-managed Kubernetes Secrets and injected by the proxy (a separate Deployment) into outbound requests.
+- **Secret isolation** -- LLM provider, Kubernetes, web search, and proxy-injected MCP credentials are stored in user-managed Kubernetes Secrets and injected by the proxy (a separate Deployment) into outbound requests. Messaging channel tokens are currently mounted on the gateway as Secret-backed env vars because OpenClaw channel clients need them for WebSocket/session authentication.
 - **External secret management** -- credential Secrets are user-managed and fully compatible with [External Secrets Operator](https://external-secrets.io/), Sealed Secrets, or HashiCorp Vault. Using an external secret manager is recommended for production.
-- **Network isolation** -- OpenClaw pods cannot reach the internet directly; all outbound traffic is forced through the credential proxy via NetworkPolicy. The proxy only allows HTTPS (port 443) egress and rejects any domain not explicitly configured.
+- **Network isolation** -- OpenClaw pods cannot reach the internet directly; outbound external traffic is forced through the credential proxy via NetworkPolicy. The proxy only allows HTTPS (port 443) egress and rejects any domain not explicitly configured.
 - **Ingress restriction** -- only the OpenShift router namespace can reach the gateway port (NetworkPolicy on ingress).
 - **Gateway authentication** -- two modes: `token` (default) auto-generates a 256-bit token per instance; `password` uses a shared password from a Kubernetes Secret. See `spec.auth` in the [CRD reference](docs/adr/0011-password-auth-mode.md).
 - **Device pairing** -- when enabled via `spec.auth.disableDevicePairing: false`, remote browser connections require a one-time approval via CLI before they can interact with the instance. Disabled by default.

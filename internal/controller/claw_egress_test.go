@@ -1152,3 +1152,56 @@ func TestEgressIntegrationExternalAndAdditional(t *testing.T) {
 		assert.Contains(t, cond.Message, "credentialRef")
 	})
 }
+
+func TestEgressIntegrationChannels(t *testing.T) {
+	t.Run("discord channel credential does not add port 443 egress rule to gateway NP", func(t *testing.T) {
+		t.Cleanup(func() { deleteAndWaitAllResources(t, namespace) })
+		ctx := context.Background()
+
+		aiSecret := createTestAPIKeySecret(aiModelSecret, namespace, aiModelSecretKey, aiModelSecretValue)
+		require.NoError(t, k8sClient.Create(ctx, aiSecret))
+
+		discordSecret := &corev1.Secret{
+			ObjectMeta: metav1.ObjectMeta{Name: "discord-token", Namespace: namespace},
+			Data:       map[string][]byte{"token": []byte("test-token")},
+		}
+		require.NoError(t, k8sClient.Create(ctx, discordSecret))
+
+		instance := &clawv1alpha1.Claw{
+			ObjectMeta: metav1.ObjectMeta{Name: testInstanceName, Namespace: namespace},
+			Spec: clawv1alpha1.ClawSpec{
+				Credentials: append(testCredentials(), clawv1alpha1.CredentialSpec{
+					Name:    "discord",
+					Channel: "discord",
+					SecretRef: []clawv1alpha1.SecretRefEntry{
+						{Name: "discord-token", Key: "token"},
+					},
+				}),
+			},
+		}
+		require.NoError(t, k8sClient.Create(ctx, instance))
+
+		reconciler := createClawReconciler()
+		reconcileClaw(t, ctx, reconciler, testInstanceName, namespace)
+
+		np := &netv1.NetworkPolicy{}
+		waitFor(t, timeout, interval, func() bool {
+			return k8sClient.Get(ctx, client.ObjectKey{
+				Name:      getEgressNetworkPolicyName(testInstanceName),
+				Namespace: namespace,
+			}, np) == nil
+		}, "gateway egress NP should be created")
+
+		found443 := false
+		for _, rule := range np.Spec.Egress {
+			if len(rule.To) == 0 {
+				for _, port := range rule.Ports {
+					if port.Port != nil && port.Port.IntValue() == 443 {
+						found443 = true
+					}
+				}
+			}
+		}
+		assert.False(t, found443, "discord should use channels.discord.proxy instead of broad gateway 443 egress")
+	})
+}

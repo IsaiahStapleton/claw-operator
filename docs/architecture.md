@@ -43,7 +43,7 @@ Resource names in the embedded Kustomize manifests use a `CLAW_INSTANCE_NAME` pl
 
 ## Credential System Design
 
-The proxy sits between the gateway and external APIs, injecting credentials into requests transparently. This design means the gateway never sees raw API keys — it talks to the proxy via HTTP_PROXY, and the proxy does TLS interception (MITM) to add auth headers.
+The proxy sits between the gateway and external APIs, injecting credentials into requests transparently. For LLM providers, Kubernetes credentials, web search, and proxy-injected MCP credentials, this design means the gateway never sees raw API keys — it talks to the proxy via HTTP_PROXY, and the proxy does TLS interception (MITM) to add auth headers. Messaging channel tokens are a current exception because OpenClaw channel clients need runtime tokens for WebSocket/session authentication.
 
 **Why two CONNECT modes?** Most domains need MITM for credential injection, path filtering, or header injection. But some protocols (WhatsApp Noise handshake, certain WebSocket tunnels) break under TLS interception. Domains with `type: none` and no path/header restrictions use a direct CONNECT tunnel instead.
 
@@ -51,7 +51,7 @@ The proxy sits between the gateway and external APIs, injecting credentials into
 
 **Wire format API**: Each provider in `knownProviders` declares the OpenClaw wire format API it requires (e.g., `google-generative-ai` for Google, `anthropic-messages` for Anthropic, `openai-responses` for xAI, `openai-codex-responses` for the internal openai-codex companion). `buildProviderEntry()` bakes the correct `api` field into every `models.providers` entry at generation time. Providers using the OpenClaw default (`openai-completions`) — like `openai` and unknown providers — omit the field entirely.
 
-**Channel defaults**: known channels (telegram, discord, slack, whatsapp) have pre-configured domain, credential type, companion routes, and placeholder tokens. Users only need to specify `channel` and `secretRef` — the operator infers proxy config and injects channel enablement into `operator.json`. This mirrors the `provider` pattern for LLM credentials. Explicit values always take precedence as an escape hatch.
+**Channel defaults**: known channels (telegram, discord, slack, whatsapp) have pre-configured domain, credential type, companion routes, and Secret-backed token config. Users only need to specify `channel` and `secretRef` — the operator infers proxy config and injects channel enablement into `operator.json`. Channel tokens are mounted into the gateway pod as operator-private env vars, and `operator.json` points OpenClaw at those env-backed token references rather than Kubernetes SecretRefs. This is intentionally weaker than the proxy-only LLM provider boundary until channel WebSocket/session auth can move behind the proxy. Explicit values always take precedence as an escape hatch.
 
 **Vertex AI path**: credentials with `type: gcp` and a non-google `provider` (e.g., anthropic) use the native Vertex AI SDK rather than gateway routing. The operator creates a stub ADC (Application Default Credentials) ConfigMap so google-auth-library can bootstrap, and the proxy intercepts token refresh requests to vend real tokens. Providers that require an external OpenClaw plugin for the Vertex SDK path (declared via `VertexPlugin` in `knownProviders`) are auto-installed — `effectivePlugins()` merges these implicit plugins with explicit `spec.plugins` entries, deduplicating where both are declared.
 
@@ -93,4 +93,3 @@ A `NormalizeDeployment()` function pre-applies Kubernetes admission defaults (st
 The Kustomize-rendered unstructured Deployment is converted to a typed `*appsv1.Deployment` via `runtime.DefaultUnstructuredConverter.FromUnstructured()` at the apply boundary.
 
 See [ADR-0018](adr/0018-centralized-provider-registry.md) for the full decision record.
-

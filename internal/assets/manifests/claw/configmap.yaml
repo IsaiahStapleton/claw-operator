@@ -591,9 +591,13 @@ data:
 
     ## Key constraints (always in effect)
 
-    - All outbound traffic goes through a credential-injecting MITM proxy.
-      Domains not explicitly configured are blocked.
-    - Real credentials never reach this pod. The proxy injects them.
+    - LLM provider, Kubernetes, web search, and proxy-injected MCP traffic goes
+      through a credential-injecting MITM proxy. Domains not explicitly configured
+      are blocked.
+    - LLM/provider/API credentials do not reach this pod. The proxy injects them.
+      Messaging channel tokens are the exception: operator-managed channels use
+      Secret-backed gateway env vars because OpenClaw channel clients need runtime
+      tokens for WebSocket/session authentication.
     - `openclaw config patch` works for user-managed settings (custom plugins,
       agent preferences, UI tweaks). For declarative configuration that
       persists across CR updates, use `spec.config.raw` in the Claw CR.
@@ -668,9 +672,10 @@ data:
 
     - Gateway bind address, port, auth, and update settings are managed by the
       operator. Do not tell the user to change these in `openclaw.json`.
-    - Real credentials are not stored in this gateway container. Network requests go
-      through a credential-injecting proxy that replaces placeholder credentials with
-      real secrets.
+    - LLM/provider/API credentials are not stored in this gateway container. Network
+      requests go through a credential-injecting proxy that replaces placeholder
+      credentials with real secrets. Messaging channel tokens are the exception and
+      may be mounted as Secret-backed gateway env vars for channel runtime auth.
     - Network egress is restricted. If an external service is unreachable, the user
       may need an operator/admin to add the right credential or allowlist entry to
       the Claw custom resource.
@@ -734,9 +739,9 @@ data:
 
     # Proxy Architecture
 
-    All outbound traffic from this pod goes through a credential-injecting MITM proxy
-    via `HTTP_PROXY`/`HTTPS_PROXY` environment variables. The proxy blocks any domain
-    that is not explicitly configured.
+    Outbound external traffic from this pod goes through a credential-injecting MITM
+    proxy via `HTTP_PROXY`/`HTTPS_PROXY` environment variables. The proxy blocks any
+    domain that is not explicitly configured.
 
     By default, all egress (including in-cluster) goes through the proxy. When
     `spec.network.inClusterBypass` is `true`, in-cluster traffic (`.svc`,
@@ -747,7 +752,9 @@ data:
     LLM provider credentials (API keys, OAuth tokens, GCP service account tokens) are
     injected by the proxy — you never see real secrets. For non-LLM services that need
     network access without credential injection, the proxy can allowlist domains using
-    `type: none` credential entries.
+    `type: none` credential entries. Messaging channel tokens are mounted as
+    Secret-backed gateway env vars for channel runtime auth, so treat channel access
+    as a gateway-runtime secret boundary rather than a proxy-only boundary.
 
     ## Network configuration (`spec.network`)
 
@@ -1065,7 +1072,7 @@ data:
     When a credential in the Claw CR has a `channel:` field (e.g., `channel: telegram`),
     the operator fully manages that channel:
     - Proxy config (domain, credential type, companion routes) is auto-inferred
-    - Channel config is injected into `operator.json` (enabled + placeholder tokens)
+    - Channel config is injected into `operator.json` (enabled + Secret-backed env tokens)
     - Plugin entries are added to `operator.json`
     - Pod rolls out automatically when channel config changes
 

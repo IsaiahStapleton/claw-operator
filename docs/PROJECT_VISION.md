@@ -47,7 +47,7 @@ Other hats and use cases are open for exploration.
 
 - **One OpenClaw per user**, isolated in the user's own namespace
 - **Operator** deploys and manages the full stack: gateway, proxy, networking, credentials
-- **Proxy** sits between OpenClaw and everything external — LLM APIs and the Kube API server alike. Injects credentials so the OpenClaw process itself never sees raw keys.
+- **Proxy** sits between OpenClaw and most external APIs — LLM APIs and the Kube API server alike. It injects those credentials so the OpenClaw process itself never sees raw provider/API keys. Messaging channel tokens are a current gateway-runtime exception for WebSocket/session auth.
 - **NetworkPolicies** ensure OpenClaw can only talk through its proxy, never directly to the internet or the API server
 
 ## Deployments

@@ -615,6 +615,11 @@ func (r *ClawResourceReconciler) Reconcile(ctx context.Context, req ctrl.Request
 		return ctrl.Result{}, fmt.Errorf("failed to stamp MCP secret version annotations: %w", err)
 	}
 
+	// Stamp channel Secret versions on gateway deployment for rollout
+	if err := r.stampChannelSecretVersionAnnotation(ctx, objects, instance); err != nil {
+		return ctrl.Result{}, fmt.Errorf("failed to stamp channel secret version annotations: %w", err)
+	}
+
 	// Stamp persona ConfigMap hash to trigger rollout on persona file changes
 	if err := stampPersonaConfigHash(objects, instance, personaData); err != nil {
 		return ctrl.Result{}, fmt.Errorf("failed to stamp persona config hash: %w", err)
@@ -840,7 +845,6 @@ func (r *ClawResourceReconciler) enrichConfigAndNetworkPolicy(
 	if err := unstructured.SetNestedField(cmObj.Object, string(updatedJSON), "data", operatorJSONKey); err != nil {
 		return fmt.Errorf("failed to write enriched operator.json back to ConfigMap: %w", err)
 	}
-
 	if err := injectWorkspaceFiles(objects, instance); err != nil {
 		return fmt.Errorf("failed to inject workspace files: %w", err)
 	}
@@ -929,6 +933,9 @@ func (r *ClawResourceReconciler) configureDeployments(
 	}
 	if err := configureGatewayForMcpServers(objects, instance); err != nil {
 		return fmt.Errorf("failed to configure gateway for MCP servers: %w", err)
+	}
+	if err := configureGatewayForChannels(objects, instance); err != nil {
+		return fmt.Errorf("failed to configure gateway for channels: %w", err)
 	}
 	if err := configureClawDeploymentForAuth(objects, instance); err != nil {
 		return fmt.Errorf("failed to configure gateway for auth: %w", err)

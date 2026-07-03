@@ -19,6 +19,7 @@ package controller
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -210,12 +211,38 @@ func TestBuildChannelConfig(t *testing.T) {
 		assert.Equal(t, "*", allowFrom[0])
 	})
 
-	t.Run("discord builds base config with enabled and botToken", func(t *testing.T) {
+	t.Run("discord builds base config with enabled and token", func(t *testing.T) {
 		cred := clawv1alpha1.CredentialSpec{Name: "dc", Channel: "discord"}
 		config, err := buildChannelConfig(cred)
 		require.NoError(t, err)
 		assert.Equal(t, true, config["enabled"])
-		assert.Equal(t, "placeholder", config["botToken"])
+		assert.Equal(t, "placeholder", config["token"])
+	})
+
+	t.Run("discord token uses env SecretRef when secret is configured", func(t *testing.T) {
+		cred := clawv1alpha1.CredentialSpec{
+			Name:      "dc",
+			Channel:   "discord",
+			SecretRef: []clawv1alpha1.SecretRefEntry{{Name: "discord-secret", Key: "token"}},
+		}
+		config, err := buildChannelConfig(cred)
+		require.NoError(t, err)
+		assert.Equal(t, channelEnvSecretRef("OPENCLAW_CHANNEL_DISCORD_BOT_TOKEN"), config["token"])
+	})
+
+	t.Run("discord SecretRef replacement only touches token key", func(t *testing.T) {
+		cred := clawv1alpha1.CredentialSpec{
+			Name:      "dc",
+			Channel:   "discord",
+			SecretRef: []clawv1alpha1.SecretRefEntry{{Name: "discord-secret", Key: "token"}},
+			ChannelConfig: &runtime.RawExtension{
+				Raw: []byte(`{"statusText":"placeholder"}`),
+			},
+		}
+		config, err := buildChannelConfig(cred)
+		require.NoError(t, err)
+		assert.Equal(t, channelEnvSecretRef("OPENCLAW_CHANNEL_DISCORD_BOT_TOKEN"), config["token"])
+		assert.Equal(t, "placeholder", config["statusText"])
 	})
 
 	t.Run("slack builds base config with both tokens", func(t *testing.T) {
@@ -225,6 +252,21 @@ func TestBuildChannelConfig(t *testing.T) {
 		assert.Equal(t, true, config["enabled"])
 		assert.Equal(t, "xoxb-placeholder", config["botToken"])
 		assert.Equal(t, "xapp-placeholder", config["appToken"])
+	})
+
+	t.Run("slack tokens use env SecretRefs when secrets are configured", func(t *testing.T) {
+		cred := clawv1alpha1.CredentialSpec{
+			Name:    "sl",
+			Channel: "slack",
+			SecretRef: []clawv1alpha1.SecretRefEntry{
+				{Name: "slack-secret", Key: "bot-token", Role: "botToken"},
+				{Name: "slack-secret", Key: "app-token", Role: "appToken"},
+			},
+		}
+		config, err := buildChannelConfig(cred)
+		require.NoError(t, err)
+		assert.Equal(t, channelEnvSecretRef("OPENCLAW_CHANNEL_SLACK_BOT_TOKEN"), config["botToken"])
+		assert.Equal(t, channelEnvSecretRef("OPENCLAW_CHANNEL_SLACK_APP_TOKEN"), config["appToken"])
 	})
 
 	t.Run("whatsapp builds minimal config with enabled only", func(t *testing.T) {
@@ -383,6 +425,40 @@ func TestInjectChannels(t *testing.T) {
 		channels := operatorJSON["channels"].(map[string]any)
 		assert.Contains(t, channels, "telegram")
 		assert.Contains(t, channels, "whatsapp")
+	})
+
+	t.Run("rejects duplicate channel credentials", func(t *testing.T) {
+		reconciler := createClawReconciler()
+		instance := testClawWithCredentials([]clawv1alpha1.CredentialSpec{
+			{Name: "tg-one", Channel: "telegram", Type: clawv1alpha1.CredentialTypePathToken,
+				Domain: "api.telegram.org", PathToken: &clawv1alpha1.PathTokenConfig{Prefix: "/bot"}},
+			{Name: "tg-two", Channel: "telegram", Type: clawv1alpha1.CredentialTypePathToken,
+				Domain: "api.telegram.org", PathToken: &clawv1alpha1.PathTokenConfig{Prefix: "/bot"}},
+		})
+		objects, err := reconciler.buildKustomizedObjects(instance)
+		require.NoError(t, err)
+
+		operatorJSON := extractOperatorJSON(t, objects, instance.Name)
+		err = injectChannels(operatorJSON, instance)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(),
+			`credentials "tg-one" and "tg-two" declare duplicate channel "telegram"`)
+	})
+
+	t.Run("injects explicit Discord gateway proxy into operator.json", func(t *testing.T) {
+		reconciler := createClawReconciler()
+		instance := testClawWithCredentials([]clawv1alpha1.CredentialSpec{
+			{Name: "dc", Channel: "discord", Type: clawv1alpha1.CredentialTypeAPIKey, Domain: "discord.com"},
+		})
+		objects, err := reconciler.buildKustomizedObjects(instance)
+		require.NoError(t, err)
+
+		operatorJSON := extractOperatorJSON(t, objects, instance.Name)
+		require.NoError(t, injectChannels(operatorJSON, instance))
+
+		channels := operatorJSON["channels"].(map[string]any)
+		discord := channels["discord"].(map[string]any)
+		assert.Equal(t, fmt.Sprintf("http://%s-proxy:8080", instance.Name), discord["proxy"])
 	})
 
 	t.Run("skips injection when no channels are present", func(t *testing.T) {
@@ -677,7 +753,7 @@ func TestChannelCredentialReconciliation(t *testing.T) {
 		tg, ok := channels["telegram"].(map[string]any)
 		require.True(t, ok)
 		assert.Equal(t, true, tg["enabled"])
-		assert.Equal(t, "placeholder", tg["botToken"])
+		assert.Equal(t, channelEnvSecretRef("OPENCLAW_CHANNEL_TELEGRAM_BOT_TOKEN"), tg["botToken"])
 		assert.Equal(t, "open", tg["dmPolicy"], "operator should set open dmPolicy for Telegram")
 		assert.Equal(t, []any{"*"}, tg["allowFrom"], "operator should set wildcard allowFrom for Telegram")
 
