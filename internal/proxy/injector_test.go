@@ -17,6 +17,7 @@ limitations under the License.
 package proxy
 
 import (
+	"encoding/base64"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -109,6 +110,10 @@ func TestNewInjector(t *testing.T) {
 			route: Route{Injector: "bearer", EnvVar: "CRED_TEST"},
 		},
 		{
+			name:  "basic injector",
+			route: Route{Injector: "basic", BasicUsername: "x-access-token", EnvVar: "CRED_TEST"},
+		},
+		{
 			name:  "gcp injector",
 			route: Route{Injector: "gcp", SAFilePath: "/tmp/sa.json"},
 		},
@@ -125,6 +130,16 @@ func TestNewInjector(t *testing.T) {
 		{
 			name:    "bearer without envVar",
 			route:   Route{Injector: "bearer"},
+			wantErr: true,
+		},
+		{
+			name:    "basic without envVar",
+			route:   Route{Injector: "basic", BasicUsername: "x-access-token"},
+			wantErr: true,
+		},
+		{
+			name:    "basic without username",
+			route:   Route{Injector: "basic", EnvVar: "CRED_TEST"},
 			wantErr: true,
 		},
 		{
@@ -241,6 +256,24 @@ func TestBearerInjector(t *testing.T) {
 
 	assert.Equal(t, "Bearer sk-test-key", req.Header.Get("Authorization"))
 	assert.Equal(t, "2023-06-01", req.Header.Get("anthropic-version"))
+}
+
+func TestBasicInjector(t *testing.T) {
+	t.Setenv("CRED_GITHUB_GIT", "ghp_test")
+
+	inj, err := NewBasicInjector(&Route{
+		BasicUsername:  "x-access-token",
+		EnvVar:         "CRED_GITHUB_GIT",
+		DefaultHeaders: map[string]string{"x-git-protocol": "version=2", "Authorization": "Bearer ignored"},
+	})
+	require.NoError(t, err)
+
+	req, _ := http.NewRequest(http.MethodGet, "https://github.com/owner/repo.git/info/refs", nil)
+	require.NoError(t, inj.Inject(req))
+
+	want := base64.StdEncoding.EncodeToString([]byte("x-access-token:ghp_test"))
+	assert.Equal(t, "Basic "+want, req.Header.Get("Authorization"))
+	assert.Equal(t, "version=2", req.Header.Get("x-git-protocol"))
 }
 
 func TestNoneInjector(t *testing.T) {

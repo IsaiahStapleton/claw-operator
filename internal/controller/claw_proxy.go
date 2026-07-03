@@ -49,6 +49,7 @@ import (
 const (
 	injectorAPIKey     = "api_key"
 	injectorBearer     = "bearer"
+	injectorBasic      = "basic"
 	injectorGCP        = "gcp"
 	injectorNone       = "none"
 	injectorPathToken  = "path_token"
@@ -62,6 +63,7 @@ type proxyRoute struct {
 	Injector       string            `json:"injector"`
 	Header         string            `json:"header,omitempty"`
 	ValuePrefix    string            `json:"valuePrefix,omitempty"`
+	BasicUsername  string            `json:"basicUsername,omitempty"`
 	EnvVar         string            `json:"envVar,omitempty"`
 	SAFilePath     string            `json:"saFilePath,omitempty"`
 	GCPProject     string            `json:"gcpProject,omitempty"`
@@ -283,6 +285,10 @@ func buildCredentialRoute(cred clawv1alpha1.CredentialSpec) proxyRoute {
 	case clawv1alpha1.CredentialTypeBearer:
 		route.Injector = injectorBearer
 		route.EnvVar = credEnvVarName(cred.Name)
+	case credentialTypeBasic:
+		route.Injector = injectorBasic
+		route.EnvVar = credEnvVarName(cred.Name)
+		route.BasicUsername = githubBasicUsername
 	case clawv1alpha1.CredentialTypeGCP:
 		route.Injector = injectorGCP
 		route.SAFilePath = "/etc/proxy/credentials/" + cred.Name + "/sa-key.json"
@@ -530,6 +536,7 @@ func configureProxyForCredentials(objects []*unstructured.Unstructured, instance
 			ref := proxySecretForCredential(cred)
 			switch cred.Type {
 			case clawv1alpha1.CredentialTypeAPIKey, clawv1alpha1.CredentialTypeBearer,
+				credentialTypeBasic,
 				clawv1alpha1.CredentialTypePathToken, clawv1alpha1.CredentialTypeOAuth2:
 				if ref == nil {
 					continue
@@ -669,6 +676,18 @@ func (r *ClawResourceReconciler) stampSecretVersionAnnotation(
 			return fmt.Errorf("failed to get Secret %q for web search: %w", ws.SecretRef.Name, err)
 		}
 		versions[webSearchCredPrefix] = secret.ResourceVersion
+	}
+
+	if gh := githubRepoAccess(instance); gh != nil &&
+		(repoAccessEnabled(gh.EnableAPIProxy) || repoAccessEnabled(gh.EnableGitHTTPS)) {
+		secret := &corev1.Secret{}
+		if err := r.UserSecretReader.Get(ctx, client.ObjectKey{
+			Namespace: instance.Namespace,
+			Name:      gh.SecretRef.Name,
+		}, secret); err != nil {
+			return fmt.Errorf("failed to get Secret %q for repo access: %w", gh.SecretRef.Name, err)
+		}
+		versions["repo-access-github"] = secret.ResourceVersion
 	}
 
 	if len(versions) == 0 {

@@ -342,6 +342,46 @@ type WebFetchSpec struct {
 	Enabled bool `json:"enabled"`
 }
 
+// RepoAccessSpec configures repository access for agent runtime commands.
+type RepoAccessSpec struct {
+	// GitHub configures GitHub API and Git HTTPS access using a user PAT.
+	// +optional
+	GitHub *GitHubRepoAccessSpec `json:"github,omitempty"`
+}
+
+// GitHubRepoAccessSpec configures GitHub repository access for agents.
+type GitHubRepoAccessSpec struct {
+	// SecretRef references a Secret key holding a GitHub PAT.
+	SecretRef SecretRefEntry `json:"secretRef"`
+
+	// EnableAPIProxy configures proxy bearer injection for api.github.com.
+	// Defaults to true.
+	// +optional
+	// +kubebuilder:default=true
+	EnableAPIProxy *bool `json:"enableApiProxy,omitempty"`
+
+	// EnableGitHTTPS configures proxy Basic auth injection for github.com Git.
+	// Defaults to true.
+	// +optional
+	// +kubebuilder:default=true
+	EnableGitHTTPS *bool `json:"enableGitHttps,omitempty"`
+
+	// ExposeEnv mounts the PAT into the gateway for tools that require env vars.
+	// Defaults to false so normal git HTTPS can use proxy-managed credentials.
+	// +optional
+	ExposeEnv bool `json:"exposeEnv,omitempty"`
+
+	// EnvNames overrides the env var names used when exposeEnv is true.
+	// Defaults to GH_TOKEN and GITHUB_TOKEN.
+	// +optional
+	EnvNames []string `json:"envNames,omitempty"`
+
+	// AllowedRepositories restricts Git HTTPS access to owner/repo entries.
+	// If empty, all github.com paths are allowed.
+	// +optional
+	AllowedRepositories []string `json:"allowedRepositories,omitempty"`
+}
+
 // AuthMode selects the gateway authentication mechanism.
 // +kubebuilder:validation:Enum=token;password
 type AuthMode string
@@ -768,6 +808,10 @@ type ClawSpec struct {
 	// permitted by credentials, search providers, or builtins are reachable.
 	// +optional
 	WebFetch *WebFetchSpec `json:"webFetch,omitempty"`
+
+	// RepoAccess configures repository access for agent runtime commands.
+	// +optional
+	RepoAccess *RepoAccessSpec `json:"repoAccess,omitempty"`
 
 	// Metrics configures Prometheus metrics for the gateway. The gateway sends
 	// OTLP metrics to spec.traces.endpoint; a ServiceMonitor is created for
