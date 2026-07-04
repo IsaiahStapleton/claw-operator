@@ -1374,6 +1374,11 @@ spec:
 
 Set `spec.config.management: user` when users should manage OpenClaw through the normal OpenClaw files and UI instead of through CR fields.
 
+Cluster admins can disable this opt-in mode for an operator deployment by
+setting `DISABLE_USER_CONFIG_MANAGEMENT=true` on the operator manager. When
+disabled, any `Claw` with `spec.config.management: user` is rejected with a
+validation failure and operator-managed config remains the only supported mode.
+
 In user-managed mode, the operator:
 
 - Seeds `openclaw.json` on first boot from `spec.config.raw`, provider/model settings, and any `spec.agentFiles` source
@@ -1384,6 +1389,16 @@ In user-managed mode, the operator:
 - Seeds a user-owned deployment context skill at `skills/deployment/SKILL.md` if that file does not already exist
 
 Provider and model config from the CR is a first-boot seed in user-managed mode. This lets dashboards create a working instance with an initial provider/model, then lets users change providers and models at runtime without the operator re-adding or overwriting those choices on every restart.
+
+When runtime config fields are set on the CR in user-managed mode, the operator
+logs a warning that those fields are seed-only after first boot. Ongoing
+changes to runtime config should be made through OpenClaw itself. This applies
+to fields such as `spec.config.raw`, provider/model declarations,
+`spec.customProviders`, `spec.mcpServers`, `spec.webSearch`, `spec.webFetch`,
+`spec.plugins`, `spec.workspace`, and `spec.skills`. Infrastructure fields such
+as `spec.auth`, Secret-backed credential routing, NetworkPolicy settings,
+read-only restrictions, observability, idle state, and image version remain
+operator-managed.
 
 ```yaml
 spec:
@@ -1396,6 +1411,31 @@ spec:
   config:
     management: user
 ```
+
+#### Migrating an existing Claw to user-managed mode
+
+After updating the operator, migrate each existing instance with the helper
+script:
+
+```bash
+# Preview the commands.
+make migrate-user-config NS=sallyom-claw CLAW=instance DRY_RUN=1
+
+# Apply the migration.
+make migrate-user-config NS=sallyom-claw CLAW=instance
+```
+
+The migration is idempotent. It patches the `Claw` to
+`spec.config.management: user`, restarts the gateway Deployment so the updated
+`init-config` runs, waits for readiness, removes stale operator-injected
+`workspace/skills/platform` and `workspace/skills/kubernetes` directories if
+they remain, and reports user-owned files that may still contain old
+operator-managed wording.
+
+The helper does not rewrite `workspace/AGENTS.md` or
+`skills/deployment/SKILL.md` because those files are user-owned. If the report
+lists either file for review, update it through OpenClaw or by explicitly
+editing the file in the pod.
 
 ### `spec.agentFiles`
 

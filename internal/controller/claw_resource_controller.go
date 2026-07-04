@@ -29,6 +29,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/go-logr/logr"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -397,6 +398,10 @@ type ClawResourceReconciler struct {
 	ProxyImage       string
 	KubectlImage     string
 	ImagePullPolicy  string
+	// DisableUserConfigManagement lets cluster admins reject
+	// spec.config.management=user for operator deployments that require
+	// fully operator-managed runtime config.
+	DisableUserConfigManagement bool
 	// MetricsRefreshed is closed by Start() after the initial metrics refresh.
 	// Reconcile() waits on it so no reconciliation runs before metrics are populated.
 	MetricsRefreshed chan struct{}
@@ -449,6 +454,18 @@ func (r *ClawResourceReconciler) Reconcile(ctx context.Context, req ctrl.Request
 		instance.Spec.Version = DefaultOpenClawVersion
 	}
 
+	if r.DisableUserConfigManagement && userManagedConfig(instance) {
+		err := fmt.Errorf("spec.config.management=user is disabled by this operator deployment")
+		return r.rejectValidation(ctx, instance, logger, err, "User-managed config rejected")
+	}
+	if fields := userManagedRuntimeConfigFields(instance); len(fields) > 0 {
+		logger.Info(
+			"Operating in user-managed config mode; CR runtime config fields are seed-only after first boot. "+
+				"Make ongoing changes directly in OpenClaw config.",
+			"fields", strings.Join(fields, ", "),
+		)
+	}
+
 	// Short-circuit when idled — scale deployments to zero and return
 	if instance.Spec.Idle {
 		return r.handleIdle(ctx, instance)
@@ -481,29 +498,16 @@ func (r *ClawResourceReconciler) Reconcile(ctx context.Context, req ctrl.Request
 
 	// Validate MCP envFrom secrets exist and contain specified keys
 	if err := r.validateMcpServerSecrets(ctx, instance); err != nil {
-		logger.Error(err, "MCP server secret validation failed")
-		setCondition(instance, clawv1alpha1.ConditionTypeMcpServersConfigured, metav1.ConditionFalse,
-			clawv1alpha1.ConditionReasonValidationFailed, err.Error())
-		setCondition(instance, clawv1alpha1.ConditionTypeReady, metav1.ConditionFalse,
-			clawv1alpha1.ConditionReasonValidationFailed, err.Error())
-		if statusErr := r.Status().Update(ctx, instance); statusErr != nil {
-			logger.Error(statusErr, "Failed to update status after MCP secret validation failure")
-		}
-		return ctrl.Result{}, err
+		return r.rejectValidation(ctx, instance, logger, err, "MCP server secret validation failed",
+			clawv1alpha1.ConditionTypeMcpServersConfigured)
 	}
 
 	// Warn if credentialRef is set on in-cluster MCP servers while inClusterBypass is true —
 	// the proxy is bypassed so credentials can't be injected.
 	if warning := validateMcpCredentialRefBypass(instance); warning != "" {
 		logger.Info(warning)
-		setCondition(instance, clawv1alpha1.ConditionTypeMcpServersConfigured, metav1.ConditionFalse,
-			clawv1alpha1.ConditionReasonValidationFailed, warning)
-		setCondition(instance, clawv1alpha1.ConditionTypeReady, metav1.ConditionFalse,
-			clawv1alpha1.ConditionReasonValidationFailed, warning)
-		if statusErr := r.Status().Update(ctx, instance); statusErr != nil {
-			logger.Error(statusErr, "Failed to update status after MCP credentialRef bypass validation")
-		}
-		return ctrl.Result{}, fmt.Errorf("%s", warning)
+		return r.rejectValidation(ctx, instance, logger, fmt.Errorf("%s", warning), "",
+			clawv1alpha1.ConditionTypeMcpServersConfigured)
 	}
 
 	// Validate web search configuration (secret existence, credential cross-refs)
@@ -517,50 +521,25 @@ func (r *ClawResourceReconciler) Reconcile(ctx context.Context, req ctrl.Request
 
 	userSecrets := newUserSecretCache(ctx, r.UserSecretReader, instance.Namespace)
 	if err := r.validateRepoAccessSecrets(instance, userSecrets); err != nil {
-		logger.Error(err, "Repo access validation failed")
-		setCondition(instance, clawv1alpha1.ConditionTypeReady, metav1.ConditionFalse,
-			clawv1alpha1.ConditionReasonValidationFailed, err.Error())
-		if statusErr := r.Status().Update(ctx, instance); statusErr != nil {
-			logger.Error(statusErr, "Failed to update status after repo access validation failure")
-		}
-		return ctrl.Result{}, err
+		return r.rejectValidation(ctx, instance, logger, err, "Repo access validation failed")
 	}
 
 	// Validate readOnly paths (if agentFiles.readOnly is set)
 	if instance.Spec.AgentFiles != nil && len(instance.Spec.AgentFiles.ReadOnly) > 0 {
 		if err := validateReadOnlyPaths(instance.Spec.AgentFiles.ReadOnly); err != nil {
-			logger.Error(err, "readOnly path validation failed")
-			setCondition(instance, clawv1alpha1.ConditionTypeReady, metav1.ConditionFalse,
-				clawv1alpha1.ConditionReasonValidationFailed, err.Error())
-			setCondition(instance, clawv1alpha1.ConditionTypeRestrictionsEnforced,
-				metav1.ConditionFalse, clawv1alpha1.ConditionReasonValidationFailed, err.Error())
-			if statusErr := r.Status().Update(ctx, instance); statusErr != nil {
-				logger.Error(statusErr, "Failed to update status after readOnly validation failure")
-			}
-			return ctrl.Result{}, err
+			return r.rejectValidation(ctx, instance, logger, err, "readOnly path validation failed",
+				clawv1alpha1.ConditionTypeRestrictionsEnforced)
 		}
 	}
 
 	// Validate git credential Secret (if agentFiles.git.secretRef is set)
 	if err := r.validateGitSecretRef(ctx, instance); err != nil {
-		logger.Error(err, "Git secret validation failed")
-		setCondition(instance, clawv1alpha1.ConditionTypeReady, metav1.ConditionFalse,
-			clawv1alpha1.ConditionReasonValidationFailed, err.Error())
-		if statusErr := r.Status().Update(ctx, instance); statusErr != nil {
-			logger.Error(statusErr, "Failed to update status after git secret validation failure")
-		}
-		return ctrl.Result{}, err
+		return r.rejectValidation(ctx, instance, logger, err, "Git secret validation failed")
 	}
 
 	// Validate skills (images, configMaps, cross-field collision with inline content)
 	if err := validateSkills(instance); err != nil {
-		logger.Error(err, "Skills validation failed")
-		setCondition(instance, clawv1alpha1.ConditionTypeReady, metav1.ConditionFalse,
-			clawv1alpha1.ConditionReasonValidationFailed, err.Error())
-		if statusErr := r.Status().Update(ctx, instance); statusErr != nil {
-			logger.Error(statusErr, "Failed to update status after skills validation failure")
-		}
-		return ctrl.Result{}, err
+		return r.rejectValidation(ctx, instance, logger, err, "Skills validation failed")
 	}
 
 	// Generate proxy config, apply ConfigMaps (proxy config + Vertex AI stub ADC)
@@ -578,13 +557,7 @@ func (r *ClawResourceReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	// Resolve persona ConfigMap keys (if restrictions.personaRef is set)
 	personaKeys, personaData, err := r.resolvePersonaRef(ctx, instance)
 	if err != nil {
-		logger.Error(err, "Persona reference validation failed")
-		setCondition(instance, clawv1alpha1.ConditionTypeReady, metav1.ConditionFalse,
-			clawv1alpha1.ConditionReasonValidationFailed, err.Error())
-		if statusErr := r.Status().Update(ctx, instance); statusErr != nil {
-			logger.Error(statusErr, "Failed to update status after persona validation failure")
-		}
-		return ctrl.Result{}, err
+		return r.rejectValidation(ctx, instance, logger, err, "Persona reference validation failed")
 	}
 	hasReadOnly := instance.Spec.AgentFiles != nil && len(instance.Spec.AgentFiles.ReadOnly) > 0
 	if len(personaKeys) == 0 && !hasReadOnly {
@@ -672,15 +645,9 @@ func (r *ClawResourceReconciler) Reconcile(ctx context.Context, req ctrl.Request
 
 	// Validate auth password Secret (if auth mode is "password")
 	if _, err := r.resolveAuthPassword(ctx, instance); err != nil {
-		logger.Error(err, "Failed to resolve auth password")
 		instance.Status.URL = "" //nolint:staticcheck // deprecated but still populated
 		instance.Status.GatewayURL = ""
-		setCondition(instance, clawv1alpha1.ConditionTypeReady, metav1.ConditionFalse,
-			clawv1alpha1.ConditionReasonValidationFailed, err.Error())
-		if statusErr := r.Status().Update(ctx, instance); statusErr != nil {
-			logger.Error(statusErr, "Failed to update status after auth password failure")
-		}
-		return ctrl.Result{}, err
+		return r.rejectValidation(ctx, instance, logger, err, "Failed to resolve auth password")
 	}
 
 	// Phase 3: Inject Route host into ConfigMap and apply remaining resources
@@ -731,6 +698,29 @@ func (r *ClawResourceReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	}
 
 	return ctrl.Result{}, nil
+}
+
+func (r *ClawResourceReconciler) rejectValidation(
+	ctx context.Context,
+	instance *clawv1alpha1.Claw,
+	logger logr.Logger,
+	err error,
+	logMessage string,
+	extraConditionTypes ...string,
+) (ctrl.Result, error) {
+	if logMessage != "" {
+		logger.Error(err, logMessage)
+	}
+	for _, conditionType := range extraConditionTypes {
+		setCondition(instance, conditionType, metav1.ConditionFalse,
+			clawv1alpha1.ConditionReasonValidationFailed, err.Error())
+	}
+	setCondition(instance, clawv1alpha1.ConditionTypeReady, metav1.ConditionFalse,
+		clawv1alpha1.ConditionReasonValidationFailed, err.Error())
+	if statusErr := r.Status().Update(ctx, instance); statusErr != nil {
+		logger.Error(statusErr, "Failed to update status after validation failure")
+	}
+	return ctrl.Result{}, err
 }
 
 // resolveAndApplyCredentials handles provider defaults, credential resolution/validation,
@@ -897,7 +887,11 @@ func (r *ClawResourceReconciler) enrichConfigAndNetworkPolicy(
 	if err := injectAdditionalEgress(objects, instance); err != nil {
 		return fmt.Errorf("failed to inject additional egress rules: %w", err)
 	}
-	if err := stampGatewayConfigHash(objects, instance.Name, effectivePlugins(instance)); err != nil {
+	pluginsForHash := []string(nil)
+	if !userManagedConfig(instance) {
+		pluginsForHash = effectivePlugins(instance)
+	}
+	if err := stampGatewayConfigHash(objects, instance.Name, pluginsForHash); err != nil {
 		return fmt.Errorf("failed to stamp gateway config hash: %w", err)
 	}
 	return nil
@@ -969,7 +963,7 @@ func (r *ClawResourceReconciler) configureDeployments(
 		meta.RemoveStatusCondition(&instance.Status.Conditions,
 			clawv1alpha1.ConditionTypePluginCompatibility)
 	}
-	if !pluginInstallationDisabled(instance) {
+	if !pluginInstallationDisabled(instance) && !userManagedConfig(instance) {
 		plugins := effectivePlugins(instance)
 		if len(plugins) > 0 {
 			if err := configurePluginsInitContainer(objects, instance, plugins); err != nil {
@@ -1002,6 +996,66 @@ func (r *ClawResourceReconciler) configureDeployments(
 		return fmt.Errorf("failed to configure service account: %w", err)
 	}
 	return nil
+}
+
+func userManagedRuntimeConfigFields(instance *clawv1alpha1.Claw) []string {
+	if !userManagedConfig(instance) {
+		return nil
+	}
+
+	fields := []string{}
+	if instance.Spec.Config != nil {
+		if instance.Spec.Config.Raw != nil {
+			fields = append(fields, "spec.config.raw")
+		}
+		if instance.Spec.Config.MergeMode != "" {
+			fields = append(fields, "spec.config.mergeMode")
+		}
+	}
+
+	hasProviderCredential := false
+	hasChannelCredential := false
+	for _, cred := range instance.Spec.Credentials {
+		hasProviderCredential = hasProviderCredential || cred.Provider != ""
+		hasChannelCredential = hasChannelCredential || cred.Channel != ""
+	}
+	if hasProviderCredential {
+		fields = append(fields, "spec.credentials[].provider")
+	}
+	if hasChannelCredential {
+		fields = append(fields, "spec.credentials[].channel")
+	}
+	if len(instance.Spec.CustomProviders) > 0 {
+		fields = append(fields, "spec.customProviders")
+	}
+	if len(instance.Spec.McpServers) > 0 {
+		fields = append(fields, "spec.mcpServers")
+	}
+	if instance.Spec.WebSearch != nil {
+		fields = append(fields, "spec.webSearch")
+	}
+	if instance.Spec.WebFetch != nil {
+		fields = append(fields, "spec.webFetch")
+	}
+	if len(instance.Spec.Plugins) > 0 {
+		fields = append(fields, "spec.plugins")
+	}
+	if instance.Spec.Workspace != nil {
+		fields = append(fields, "spec.workspace")
+	}
+	if instance.Spec.Skills != nil {
+		if len(instance.Spec.Skills.Content) > 0 {
+			fields = append(fields, "spec.skills.content")
+		}
+		if len(instance.Spec.Skills.ConfigMaps) > 0 {
+			fields = append(fields, "spec.skills.configMaps")
+		}
+		if len(instance.Spec.Skills.Images) > 0 {
+			fields = append(fields, "spec.skills.images")
+		}
+	}
+
+	return fields
 }
 
 // applyProxyResources generates the proxy config, applies the proxy ConfigMap and

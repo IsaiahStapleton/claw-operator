@@ -667,6 +667,37 @@ func TestPluginsIntegration(t *testing.T) {
 		}
 	})
 
+	t.Run("should not add init-plugins container in user-managed mode", func(t *testing.T) {
+		t.Cleanup(func() { deleteAndWaitAllResources(t, namespace) })
+
+		secret := createTestAPIKeySecret(aiModelSecret, namespace, aiModelSecretKey, aiModelSecretValue)
+		require.NoError(t, k8sClient.Create(ctx, secret))
+
+		instance := &clawv1alpha1.Claw{}
+		instance.Name = testInstanceName
+		instance.Namespace = namespace
+		instance.Spec.Config = &clawv1alpha1.ConfigSpec{Management: clawv1alpha1.ConfigManagementUser}
+		instance.Spec.Credentials = testCredentials()
+		instance.Spec.Plugins = []string{"@openclaw/matrix"}
+		require.NoError(t, k8sClient.Create(ctx, instance))
+
+		reconciler := createClawReconciler()
+		reconcileClaw(t, ctx, reconciler, testInstanceName, namespace)
+
+		deployment := &appsv1.Deployment{}
+		waitFor(t, timeout, interval, func() bool {
+			return k8sClient.Get(ctx, client.ObjectKey{
+				Name:      getClawDeploymentName(testInstanceName),
+				Namespace: namespace,
+			}, deployment) == nil
+		}, "Deployment should be created")
+
+		for _, ic := range deployment.Spec.Template.Spec.InitContainers {
+			assert.NotEqual(t, PluginsInitContainerName, ic.Name,
+				"Deployment should not have init-plugins container in user-managed mode")
+		}
+	})
+
 	t.Run("should install multiple plugins", func(t *testing.T) {
 		t.Cleanup(func() { deleteAndWaitAllResources(t, namespace) })
 
