@@ -322,6 +322,7 @@ func (r *ClawResourceReconciler) updateStatus(ctx context.Context, instance *cla
 
 	// Expose gateway secret name in status
 	instance.Status.GatewayTokenSecretRef = getGatewaySecretName(instance.Name)
+	instance.Status.Image = effectiveOpenClawImage(instance)
 
 	// Populate URL fields only when all deployments are ready
 	if ready {

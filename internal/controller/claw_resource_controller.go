@@ -70,6 +70,7 @@ const (
 
 	OpenClawImageBase      = "ghcr.io/openclaw/openclaw"
 	DefaultOpenClawVersion = "2026.6.10"
+	DefaultOpenClawImage   = OpenClawImageBase + ":" + DefaultOpenClawVersion
 
 	// OpenClaw JSON config keys shared across enrichment functions
 	configKeyGateway   = "gateway"

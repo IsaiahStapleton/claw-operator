@@ -38,15 +38,21 @@ import (
 const gitCredentialsVolumeName = "git-credentials"
 const protectedFilesVolumeName = "protected-files"
 
-// configureClawImage overrides the OpenClaw container image tag on the gateway
-// Deployment when spec.version is set. Affects init-volume, init-config (init
-// containers) and gateway (regular container).
-func configureClawImage(objects []*unstructured.Unstructured, instance *clawv1alpha1.Claw) error {
-	if instance.Spec.Version == "" {
-		return nil
+func effectiveOpenClawImage(instance *clawv1alpha1.Claw) string {
+	if instance.Spec.Image != "" {
+		return instance.Spec.Image
 	}
+	if instance.Spec.Version != "" {
+		return OpenClawImageBase + ":" + instance.Spec.Version
+	}
+	return DefaultOpenClawImage
+}
 
-	image := OpenClawImageBase + ":" + instance.Spec.Version
+// configureClawImage sets the OpenClaw container image on the gateway
+// Deployment. spec.image takes precedence over spec.version. Affects
+// init-volume, init-config (init containers), and gateway (regular container).
+func configureClawImage(objects []*unstructured.Unstructured, instance *clawv1alpha1.Claw) error {
+	image := effectiveOpenClawImage(instance)
 	gatewayName := getClawDeploymentName(instance.Name)
 	clawContainers := map[string]bool{
 		ClawInitVolumeContainerName: true,

@@ -195,7 +195,7 @@ func TestConfigureClawImage(t *testing.T) {
 		assert.Equal(t, expected, gateway["image"])
 	})
 
-	t.Run("should be no-op when version is empty", func(t *testing.T) {
+	t.Run("should use default image when image and version are empty", func(t *testing.T) {
 		objects := makeDeployment()
 		instance := &clawv1alpha1.Claw{}
 		instance.Name = testInstanceName
@@ -205,8 +205,38 @@ func TestConfigureClawImage(t *testing.T) {
 		containers, _, _ := unstructured.NestedSlice(
 			objects[0].Object, "spec", "template", "spec", "containers")
 		gateway := containers[0].(map[string]any)
-		assert.Equal(t, "ghcr.io/openclaw/openclaw:2026.5.28", gateway["image"],
-			"image should be unchanged when version is empty")
+		assert.Equal(t, DefaultOpenClawImage, gateway["image"],
+			"image should use operator default when image and version are empty")
+	})
+
+	t.Run("should prefer spec.image over spec.version", func(t *testing.T) {
+		objects := makeDeployment()
+		instance := &clawv1alpha1.Claw{}
+		instance.Name = testInstanceName
+		instance.Spec.Image = "quay.io/example/openclaw@sha256:abc123"
+		instance.Spec.Version = testClawVersion
+
+		require.NoError(t, configureClawImage(objects, instance))
+
+		initContainers, _, _ := unstructured.NestedSlice(
+			objects[0].Object, "spec", "template", "spec", "initContainers")
+		for _, ic := range initContainers {
+			c := ic.(map[string]any)
+			name := c["name"].(string)
+			switch name {
+			case ClawInitVolumeContainerName, ClawInitConfigContainerName:
+				assert.Equal(t, "quay.io/example/openclaw@sha256:abc123", c["image"],
+					"container %s should use spec.image", name)
+			case "wait-for-proxy":
+				assert.Equal(t, "mirror.gcr.io/library/busybox:1.37", c["image"],
+					"wait-for-proxy should not be affected")
+			}
+		}
+
+		containers, _, _ := unstructured.NestedSlice(
+			objects[0].Object, "spec", "template", "spec", "containers")
+		gateway := containers[0].(map[string]any)
+		assert.Equal(t, "quay.io/example/openclaw@sha256:abc123", gateway["image"])
 	})
 
 	t.Run("should return error when deployment is missing", func(t *testing.T) {
@@ -324,8 +354,59 @@ func TestClawImageOverrideIntegration(t *testing.T) {
 
 		gateway := findContainer(deployment, ClawGatewayContainerName)
 		require.NotNil(t, gateway, "gateway container should exist")
-		assert.Equal(t, OpenClawImageBase+":"+DefaultOpenClawVersion, gateway.Image,
+		assert.Equal(t, DefaultOpenClawImage, gateway.Image,
 			"should use default version when spec.version is empty")
+	})
+
+	t.Run("should propagate spec.image to OpenClaw containers and status", func(t *testing.T) {
+		t.Cleanup(func() {
+			deleteAndWaitAllResources(t, namespace)
+		})
+
+		secret := createTestAPIKeySecret(aiModelSecret, namespace, aiModelSecretKey, aiModelSecretValue)
+		require.NoError(t, k8sClient.Create(ctx, secret))
+
+		customImage := "quay.io/example/openclaw:custom"
+		instance := &clawv1alpha1.Claw{}
+		instance.Name = testInstanceName
+		instance.Namespace = namespace
+		instance.Spec.Credentials = testCredentials()
+		instance.Spec.Image = customImage
+		instance.Spec.Version = testClawVersion
+		require.NoError(t, k8sClient.Create(ctx, instance))
+
+		reconciler := createClawReconciler()
+		reconcileClaw(t, ctx, reconciler, testInstanceName, namespace)
+
+		deployment := &appsv1.Deployment{}
+		waitFor(t, timeout, interval, func() bool {
+			return k8sClient.Get(ctx, client.ObjectKey{
+				Name:      getClawDeploymentName(testInstanceName),
+				Namespace: namespace,
+			}, deployment) == nil
+		}, "Deployment should be created")
+
+		for _, ic := range deployment.Spec.Template.Spec.InitContainers {
+			switch ic.Name {
+			case ClawInitVolumeContainerName, ClawInitConfigContainerName:
+				assert.Equal(t, customImage, ic.Image,
+					"init container %s should use spec.image", ic.Name)
+			}
+		}
+
+		gateway := findContainer(deployment, ClawGatewayContainerName)
+		require.NotNil(t, gateway, "gateway container should exist")
+		assert.Equal(t, customImage, gateway.Image,
+			"gateway container should use spec.image")
+
+		setCoreDeploymentsAvailable(t, ctx, testInstanceName, namespace)
+		reconcileClaw(t, ctx, reconciler, testInstanceName, namespace)
+
+		updated := &clawv1alpha1.Claw{}
+		require.NoError(t, k8sClient.Get(ctx, client.ObjectKey{
+			Name: testInstanceName, Namespace: namespace,
+		}, updated))
+		assert.Equal(t, customImage, updated.Status.Image)
 	})
 
 }
