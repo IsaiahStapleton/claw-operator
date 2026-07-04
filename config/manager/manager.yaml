@@ -73,6 +73,8 @@ spec:
             value: quay.io/openshift/origin-cli:4.21
           - name: OTEL_COLLECTOR_IMAGE
             value: mirror.gcr.io/otel/opentelemetry-collector:0.152.1
+          - name: DISABLE_USER_CONFIG_MANAGEMENT
+            value: "false"
         ports: []
         securityContext:
           allowPrivilegeEscalation: false

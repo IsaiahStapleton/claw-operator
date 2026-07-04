@@ -28,6 +28,8 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	netv1 "k8s.io/api/networking/v1"
+	"k8s.io/apimachinery/pkg/api/meta"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/client-go/kubernetes/scheme"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -35,6 +37,87 @@ import (
 
 	clawv1alpha1 "github.com/codeready-toolchain/claw-operator/api/v1alpha1"
 )
+
+func TestUserConfigManagementGate(t *testing.T) {
+	t.Run("rejects user-managed config when admin disables it", func(t *testing.T) {
+		t.Cleanup(func() {
+			deleteAndWaitAllResources(t, namespace)
+		})
+
+		instance := &clawv1alpha1.Claw{}
+		instance.Name = testInstanceName
+		instance.Namespace = namespace
+		instance.Spec.Config = &clawv1alpha1.ConfigSpec{Management: clawv1alpha1.ConfigManagementUser}
+		require.NoError(t, k8sClient.Create(ctx, instance))
+
+		reconciler := createClawReconciler()
+		reconciler.DisableUserConfigManagement = true
+
+		_, err := reconciler.Reconcile(ctx, ctrl.Request{
+			NamespacedName: client.ObjectKey{Name: testInstanceName, Namespace: namespace},
+		})
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "spec.config.management=user is disabled")
+
+		updated := &clawv1alpha1.Claw{}
+		require.NoError(t, k8sClient.Get(ctx, client.ObjectKey{Name: testInstanceName, Namespace: namespace}, updated))
+		condition := meta.FindStatusCondition(updated.Status.Conditions, clawv1alpha1.ConditionTypeReady)
+		require.NotNil(t, condition)
+		assert.Equal(t, metav1.ConditionFalse, condition.Status)
+		assert.Equal(t, clawv1alpha1.ConditionReasonValidationFailed, condition.Reason)
+		assert.Contains(t, condition.Message, "spec.config.management=user is disabled")
+	})
+}
+
+func TestUserManagedRuntimeConfigFields(t *testing.T) {
+	raw := &clawv1alpha1.RawConfig{}
+	newInstance := func(management clawv1alpha1.ConfigManagement) *clawv1alpha1.Claw {
+		instance := &clawv1alpha1.Claw{}
+		instance.Spec.Config = &clawv1alpha1.ConfigSpec{
+			Management: management,
+			MergeMode:  clawv1alpha1.ConfigModeOverwrite,
+			Raw:        raw,
+		}
+		instance.Spec.Credentials = []clawv1alpha1.CredentialSpec{
+			{Name: "gemini", Provider: "google"},
+			{Name: "slack", Channel: "slack"},
+		}
+		instance.Spec.CustomProviders = []clawv1alpha1.CustomProviderSpec{{Name: "custom"}}
+		instance.Spec.McpServers = map[string]clawv1alpha1.McpServerSpec{"context7": {URL: "https://mcp.example.test"}}
+		instance.Spec.WebSearch = &clawv1alpha1.WebSearchSpec{Provider: "brave"}
+		instance.Spec.WebFetch = &clawv1alpha1.WebFetchSpec{Enabled: true}
+		instance.Spec.Plugins = []string{"@openclaw/matrix"}
+		instance.Spec.Workspace = &clawv1alpha1.WorkspaceSpec{SkipBootstrap: true}
+		instance.Spec.Skills = &clawv1alpha1.SkillsSpec{
+			Content:    map[string]string{"custom": "content"},
+			ConfigMaps: []clawv1alpha1.SkillConfigMapRef{{Name: "skills"}},
+			Images:     []clawv1alpha1.SkillImageSpec{{Name: "tools", Image: "example.test/tools:latest"}},
+		}
+		return instance
+	}
+
+	t.Run("returns runtime config fields in user-managed mode", func(t *testing.T) {
+		assert.Equal(t, []string{
+			"spec.config.raw",
+			"spec.config.mergeMode",
+			"spec.credentials[].provider",
+			"spec.credentials[].channel",
+			"spec.customProviders",
+			"spec.mcpServers",
+			"spec.webSearch",
+			"spec.webFetch",
+			"spec.plugins",
+			"spec.workspace",
+			"spec.skills.content",
+			"spec.skills.configMaps",
+			"spec.skills.images",
+		}, userManagedRuntimeConfigFields(newInstance(clawv1alpha1.ConfigManagementUser)))
+	})
+
+	t.Run("returns empty fields in operator-managed mode", func(t *testing.T) {
+		assert.Empty(t, userManagedRuntimeConfigFields(newInstance(clawv1alpha1.ConfigManagementOperator)))
+	})
+}
 
 // --- ConfigMap tests ---
 

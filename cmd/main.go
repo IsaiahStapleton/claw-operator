@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 
 	// Import all Kubernetes client auth plugins (e.g. Azure, GCP, OIDC, etc.)
 	// to ensure that exec-entrypoint and run can make use of them.
@@ -254,15 +255,21 @@ func main() {
 		setupLog.Error(err, "invalid IMAGE_PULL_POLICY")
 		os.Exit(1)
 	}
+	disableUserConfigManagement, err := validateOptionalBool(os.Getenv("DISABLE_USER_CONFIG_MANAGEMENT"))
+	if err != nil {
+		setupLog.Error(err, "invalid DISABLE_USER_CONFIG_MANAGEMENT")
+		os.Exit(1)
+	}
 
 	clawReconciler := &controller.ClawResourceReconciler{
-		Client:           mgr.GetClient(),
-		Scheme:           mgr.GetScheme(),
-		UserSecretReader: controller.NewLoggingUserSecretReader(mgr.GetAPIReader()),
-		ProxyImage:       os.Getenv("PROXY_IMAGE"),
-		KubectlImage:     os.Getenv("KUBECTL_IMAGE"),
-		ImagePullPolicy:  imagePullPolicy,
-		MetricsRefreshed: make(chan struct{}),
+		Client:                      mgr.GetClient(),
+		Scheme:                      mgr.GetScheme(),
+		UserSecretReader:            controller.NewLoggingUserSecretReader(mgr.GetAPIReader()),
+		ProxyImage:                  os.Getenv("PROXY_IMAGE"),
+		KubectlImage:                os.Getenv("KUBECTL_IMAGE"),
+		ImagePullPolicy:             imagePullPolicy,
+		DisableUserConfigManagement: disableUserConfigManagement,
+		MetricsRefreshed:            make(chan struct{}),
 	}
 	if err = clawReconciler.SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "Claw")
@@ -334,4 +341,11 @@ func validateImagePullPolicy(value string) (string, error) {
 		return "", fmt.Errorf("unsupported value %q, must be one of: Always, IfNotPresent, Never", value)
 	}
 	return value, nil
+}
+
+func validateOptionalBool(value string) (bool, error) {
+	if value == "" {
+		return false, nil
+	}
+	return strconv.ParseBool(value)
 }

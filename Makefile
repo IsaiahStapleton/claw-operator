@@ -310,6 +310,11 @@ approve-pairing: ## Approve a device pairing request. Usage: make approve-pairin
 			env APPROVE_RID="$$rid" node -e '$(APPROVE_SCRIPT)'; \
 	fi
 
+.PHONY: migrate-user-config
+migrate-user-config: ## Migrate an existing Claw to user-managed config. Usage: make migrate-user-config NS=... [CLAW=instance] [DRY_RUN=1]
+	@NS="$(NS)" CLAW="$(CLAW)" KUBECTL="$(KUBECTL)" DRY_RUN="$(DRY_RUN)" \
+		bash hack/migrate-user-managed-config.sh
+
 .PHONY: dev-cleanup
 dev-cleanup: ## Remove deployed controller and CRDs.
 	$(MAKE) undeploy ignore-not-found=true
@@ -511,4 +516,3 @@ mv $(1) $(1)-$(3) ;\
 } ;\
 ln -sf $(1)-$(3) $(1)
 endef
-

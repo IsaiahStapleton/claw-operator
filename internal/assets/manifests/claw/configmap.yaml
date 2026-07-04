@@ -180,6 +180,12 @@ data:
       console.log(`[init-config] copied ${dest}`);
     }
 
+    function removeIfExists(target, label) {
+      if (!fs.existsSync(target)) return;
+      fs.rmSync(target, { recursive: true, force: true });
+      console.log(`[init-config] removed ${label} at ${target}`);
+    }
+
     function copyFileWithPolicy(src, dest) {
       if (agentFilesApplyPolicy !== "Always" && fs.existsSync(dest)) return;
       const dir = path.dirname(dest);
@@ -418,6 +424,14 @@ data:
     }
 
     if (management === "user") {
+      removeIfExists(
+        path.join(workspaceDir, "skills", "platform"),
+        "operator-managed platform skill"
+      );
+      removeIfExists(
+        path.join(workspaceDir, "skills", "kubernetes"),
+        "operator-managed kubernetes skill"
+      );
       seedIfMissing(
         path.join(configDir, "UNMANAGED.md"),
         path.join(pvcDir, "skills", "deployment", "SKILL.md")
@@ -664,6 +678,16 @@ data:
       restarts.
     - Runtime changes made through the OpenClaw UI, CLI, or file edits should be
       treated as durable user changes.
+    - The agent gateway tool still enforces OpenClaw's runtime guardrail for
+      `gateway config.patch` and `gateway config.apply`. If that guard blocks a
+      protected but user-owned setting, explain the guardrail. When the user has
+      access to the underlying pod, they can make the change themselves with the
+      CLI from outside the pod, for example:
+      `oc exec -n <namespace> deploy/<claw-name> -c gateway -- openclaw config patch '<json>'`.
+      Do not present this as an agent bypass; it is a user/admin action.
+    - Skills under `/home/node/.openclaw/skills`, including this deployment skill,
+      are user-owned. You may edit them when the user asks or when you need to
+      update durable operating instructions.
     - Provider and model configuration may have been seeded during first boot, but
       later provider/model changes are user-owned and should be made through normal
       OpenClaw config workflows.

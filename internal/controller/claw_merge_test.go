@@ -360,14 +360,40 @@ func TestMergeJS(t *testing.T) {
 
 		assert.NoFileExists(t, filepath.Join(result.pvcDir, "workspace", "skills", "platform", "SKILL.md"),
 			"user-managed mode should not inject the CR-oriented platform skill")
+		assert.NoFileExists(t, filepath.Join(result.pvcDir, "workspace", "skills", "kubernetes", "SKILL.md"),
+			"user-managed mode should not inject the CR-oriented kubernetes skill")
 		assert.NoFileExists(t, filepath.Join(result.pvcDir, "workspace", ".operator", "BOOTSTRAP.md"),
 			"user-managed mode should not inject the operator bootstrap file")
 
 		deploymentSkillBytes, err := os.ReadFile(filepath.Join(result.pvcDir, "skills", "deployment", "SKILL.md"))
 		require.NoError(t, err)
 		assert.Contains(t, string(deploymentSkillBytes), "user-managed OpenClaw instance")
+		assert.Contains(t, string(deploymentSkillBytes), "You may edit them")
 		assert.NoFileExists(t, filepath.Join(result.pvcDir, "workspace", "skills", "deployment", "SKILL.md"),
 			"user-managed deployment context should not create workspace skill evidence before OpenClaw bootstrap")
+	})
+
+	t.Run("user-managed mode removes stale operator-managed skills from previous mode", func(t *testing.T) {
+		result := runMergeJS(t, mergeTestSetup{
+			pvcJSON: `{"gateway":{"port":18789}}`,
+			pvcFiles: map[string]string{
+				"workspace/skills/platform/SKILL.md":   "old platform skill",
+				"workspace/skills/kubernetes/SKILL.md": "old kubernetes skill",
+				"workspace/skills/custom/SKILL.md":     "custom user skill",
+			},
+			extraEnv: map[string]string{
+				"CLAW_CONFIG_MANAGEMENT": "user",
+			},
+		})
+
+		assert.NoFileExists(t, filepath.Join(result.pvcDir, "workspace", "skills", "platform", "SKILL.md"),
+			"user-managed mode should retire the old operator platform skill")
+		assert.NoFileExists(t, filepath.Join(result.pvcDir, "workspace", "skills", "kubernetes", "SKILL.md"),
+			"user-managed mode should retire the old operator kubernetes skill")
+
+		customSkillBytes, err := os.ReadFile(filepath.Join(result.pvcDir, "workspace", "skills", "custom", "SKILL.md"))
+		require.NoError(t, err)
+		assert.Equal(t, "custom user skill", string(customSkillBytes))
 	})
 
 	t.Run("user-managed agent files do not overwrite runtime edits by default", func(t *testing.T) {
