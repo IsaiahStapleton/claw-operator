@@ -234,6 +234,50 @@ data:
       return result;
     }
 
+    function cloneConfig(value) {
+      return JSON.parse(JSON.stringify(value));
+    }
+
+    function nestedObject(obj, parts) {
+      let current = obj;
+      for (const part of parts) {
+        if (!current || typeof current !== "object" || Array.isArray(current)) return undefined;
+        current = current[part];
+      }
+      if (!current || typeof current !== "object" || Array.isArray(current)) return undefined;
+      return current;
+    }
+
+    function ensureNestedObject(obj, parts) {
+      let current = obj;
+      for (const part of parts) {
+        if (!current[part] || typeof current[part] !== "object" || Array.isArray(current[part])) {
+          current[part] = {};
+        }
+        current = current[part];
+      }
+      return current;
+    }
+
+    function mergeMissingObjectEntries(target, source, parts) {
+      const sourceMap = nestedObject(source, parts);
+      if (!sourceMap) return;
+      const targetMap = ensureNestedObject(target, parts);
+      for (const [key, value] of Object.entries(sourceMap)) {
+        if (targetMap[key] === undefined) {
+          targetMap[key] = value;
+        }
+      }
+    }
+
+    function userManagedConfig(base, ops) {
+      const result = deepMerge(cloneConfig(base), managedInfrastructureConfig(ops));
+      mergeMissingObjectEntries(result, ops, ["models", "providers"]);
+      mergeMissingObjectEntries(result, ops, ["agents", "defaults", "models"]);
+      mergeMissingObjectEntries(result, ops, ["agents", "defaults", "model"]);
+      return result;
+    }
+
     function prepareAgentFilesSource() {
       const source = process.env.AGENT_FILES_SOURCE || "";
       if (!source) return "";
@@ -378,9 +422,9 @@ data:
 
     if (management === "user" && fs.existsSync(pvcPath)) {
       let base = JSON.parse(fs.readFileSync(pvcPath, "utf8"));
-      const merged = deepMerge(base, managedInfrastructureConfig(ops));
+      const merged = userManagedConfig(base, ops);
       fs.writeFileSync(pvcPath, JSON.stringify(merged, null, 2), { mode: 0o600 });
-      console.log("[init-config] preserved user openclaw.json and refreshed gateway infrastructure");
+      console.log("[init-config] preserved user openclaw.json and refreshed operator-provided runtime additions");
     } else if (mode === "merge" && fs.existsSync(pvcPath)) {
       let base = seed;
       try {
@@ -871,14 +915,19 @@ data:
 
     ## Models are operator-managed
 
-    The operator writes the model catalog into `operator.json` on every reconcile. This
-    means models stay in sync with the configured credentials automatically:
+    The operator writes the model catalog into `operator.json` on every reconcile. In
+    operator-managed mode, this means models stay in sync with the configured
+    credentials automatically:
     - Add a provider credential → its models appear in the picker
     - Remove a provider credential → its models disappear from the picker
     - Add a custom provider → its declared models appear in the picker
 
+    In user-managed mode, provider/model additions from the CR are merged into
+    `openclaw.json` when the pod restarts, but existing runtime entries win and
+    removals should be made directly with `openclaw config`.
+
     You do NOT need to manually edit the model list when providers change. The operator
-    handles it.
+    handles it in operator-managed mode.
 
     ## Custom / self-hosted providers (`spec.customProviders`)
 

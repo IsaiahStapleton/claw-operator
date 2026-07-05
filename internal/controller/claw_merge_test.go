@@ -264,18 +264,22 @@ func TestMergeJS(t *testing.T) {
 		assert.Contains(t, result.stdout, "merged operator.json into existing openclaw.json")
 	})
 
-	t.Run("user-managed restart preserves runtime provider and model edits", func(t *testing.T) {
+	t.Run("user-managed restart preserves runtime provider and model edits while adding new operator models", func(t *testing.T) {
 		operatorJSON := `{
 			"gateway": { "mode": "local", "bind": "lan", "port": 18789, "auth": { "mode": "token" } },
 			"models": {
 				"providers": {
-					"google": { "baseUrl": "https://generativelanguage.googleapis.com/v1beta", "apiKey": "placeholder" }
+					"google": { "baseUrl": "https://generativelanguage.googleapis.com/v1beta", "apiKey": "placeholder" },
+					"openai": { "baseUrl": "https://api.openai.com/v1", "apiKey": "placeholder" }
 				}
 			},
 			"agents": {
 				"defaults": {
 					"model": { "primary": "google/gemini-3.5-flash" },
-					"models": { "google/gemini-3.5-flash": { "alias": "Gemini Flash" } }
+					"models": {
+						"google/gemini-3.5-flash": { "alias": "Gemini Flash" },
+						"openai/gpt-5.5": { "alias": "GPT-5.5" }
+					}
 				}
 			}
 		}`
@@ -283,13 +287,17 @@ func TestMergeJS(t *testing.T) {
 			"gateway": { "mode": "local", "bind": "localhost", "port": 9999 },
 			"models": {
 				"providers": {
+					"google": { "baseUrl": "https://runtime-google.example.test/v1", "apiKey": "runtime-google" },
 					"custom": { "baseUrl": "https://models.example.test/v1", "apiKey": "runtime" }
 				}
 			},
 			"agents": {
 				"defaults": {
 					"model": { "primary": "custom/runtime-model" },
-					"models": { "custom/runtime-model": { "alias": "Runtime Model" } }
+					"models": {
+						"custom/runtime-model": { "alias": "Runtime Model" },
+						"google/gemini-3.5-flash": { "alias": "Runtime Gemini" }
+					}
 				}
 			}
 		}`
@@ -306,17 +314,30 @@ func TestMergeJS(t *testing.T) {
 		require.True(t, hasGatewayPort, "gateway.port should be refreshed from operator infrastructure")
 		assert.Equal(t, float64(18789), gatewayPort)
 
-		_, hasGoogle := nestedValue(result.config, "models.providers.google")
-		assert.False(t, hasGoogle, "operator provider seed should not be re-applied after user-managed first boot")
+		googleBaseURL, hasGoogle := nestedValue(result.config, "models.providers.google.baseUrl")
+		require.True(t, hasGoogle, "existing runtime provider should be preserved")
+		assert.Equal(t, "https://runtime-google.example.test/v1", googleBaseURL)
+
+		openAIBaseURL, hasOpenAI := nestedValue(result.config, "models.providers.openai.baseUrl")
+		require.True(t, hasOpenAI, "new operator provider should be added")
+		assert.Equal(t, "https://api.openai.com/v1", openAIBaseURL)
 
 		customBaseURL, hasCustom := nestedValue(result.config, "models.providers.custom.baseUrl")
 		require.True(t, hasCustom, "runtime provider edits should be preserved")
 		assert.Equal(t, "https://models.example.test/v1", customBaseURL)
 
+		models, hasModels := nestedValue(result.config, "agents.defaults.models")
+		require.True(t, hasModels, "models should be present")
+		modelsMap := models.(map[string]any)
+		googleModel := modelsMap["google/gemini-3.5-flash"].(map[string]any)
+		assert.Equal(t, "Runtime Gemini", googleModel["alias"], "existing runtime model alias should be preserved")
+		openAIModel := modelsMap["openai/gpt-5.5"].(map[string]any)
+		assert.Equal(t, "GPT-5.5", openAIModel["alias"], "new operator model should be added")
+
 		primary, hasPrimary := nestedValue(result.config, "agents.defaults.model.primary")
 		require.True(t, hasPrimary, "runtime model selection should be preserved")
 		assert.Equal(t, "custom/runtime-model", primary)
-		assert.Contains(t, result.stdout, "preserved user openclaw.json")
+		assert.Contains(t, result.stdout, "refreshed operator-provided runtime additions")
 	})
 
 	t.Run("user-managed first boot seeds agent files from configmap archive without operator skills", func(t *testing.T) {
