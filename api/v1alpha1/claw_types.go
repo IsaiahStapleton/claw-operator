@@ -447,8 +447,11 @@ type ConfigSpec struct {
 
 	// Management controls ownership of openclaw.json after first boot.
 	// "operator" (default) continues to merge operator-managed config on every
-	// pod start. "user" seeds provider/model config once, then preserves runtime
-	// edits while still enforcing gateway infrastructure and authentication.
+	// pod start. "user" preserves runtime edits while still enforcing gateway
+	// infrastructure and authentication. Proxy-backed provider/model/add-on
+	// entries from the CR are tracked as operator-owned runtime keys: CR additions
+	// are merged, CR removals prune keys the operator previously managed, and
+	// direct OpenClaw config entries remain user-owned.
 	// +optional
 	// +kubebuilder:validation:Enum=operator;user
 	// +kubebuilder:default=operator

@@ -270,6 +270,7 @@ func TestMergeJS(t *testing.T) {
 			"models": {
 				"providers": {
 					"google": { "baseUrl": "https://generativelanguage.googleapis.com/v1beta", "apiKey": "placeholder" },
+					"anthropic": { "baseUrl": "https://api.anthropic.com", "apiKey": "placeholder" },
 					"openai": { "baseUrl": "https://api.openai.com/v1", "apiKey": "placeholder" }
 				}
 			},
@@ -278,6 +279,7 @@ func TestMergeJS(t *testing.T) {
 					"model": { "primary": "google/gemini-3.5-flash" },
 					"models": {
 						"google/gemini-3.5-flash": { "alias": "Gemini Flash" },
+						"anthropic/claude-sonnet-4-6": { "alias": "Claude Sonnet 4.6" },
 						"openai/gpt-5.5": { "alias": "GPT-5.5" }
 					}
 				}
@@ -288,6 +290,7 @@ func TestMergeJS(t *testing.T) {
 			"models": {
 				"providers": {
 					"google": { "baseUrl": "https://runtime-google.example.test/v1", "apiKey": "runtime-google" },
+					"anthropic": { "baseUrl": "https://api.anthropic.com", "apiKey": "placeholder" },
 					"custom": { "baseUrl": "https://models.example.test/v1", "apiKey": "runtime" }
 				}
 			},
@@ -337,7 +340,182 @@ func TestMergeJS(t *testing.T) {
 		primary, hasPrimary := nestedValue(result.config, "agents.defaults.model.primary")
 		require.True(t, hasPrimary, "runtime model selection should be preserved")
 		assert.Equal(t, "custom/runtime-model", primary)
+		stateBytes, err := os.ReadFile(filepath.Join(result.pvcDir, ".operator", "managed-runtime-config.json"))
+		require.NoError(t, err)
+		var state map[string]any
+		require.NoError(t, json.Unmarshal(stateBytes, &state))
+		entries := state["entries"].(map[string]any)
+		assert.ElementsMatch(t, []any{"anthropic", "openai"}, entries["models.providers"],
+			"only operator-added providers should be owned when existing runtime keys collide")
 		assert.Contains(t, result.stdout, "refreshed operator-provided runtime additions")
+	})
+
+	t.Run("user-managed restart prunes previously operator-managed providers removed from CR", func(t *testing.T) {
+		operatorJSON := `{
+			"gateway": { "mode": "local", "bind": "lan", "port": 18789, "auth": { "mode": "token" } },
+			"models": {
+				"providers": {
+					"anthropic": { "baseUrl": "https://api.anthropic.com", "apiKey": "placeholder" }
+				}
+			},
+			"agents": {
+				"defaults": {
+					"model": {
+						"primary": "anthropic/claude-sonnet-4-6",
+						"fallbacks": ["anthropic/claude-opus-4-8"]
+					},
+					"models": {
+						"anthropic/claude-sonnet-4-6": { "alias": "Claude Sonnet 4.6" },
+						"anthropic/claude-opus-4-8": { "alias": "Claude Opus 4.8" }
+					}
+				}
+			}
+		}`
+		pvcJSON := `{
+			"models": {
+				"providers": {
+					"openrouter": { "baseUrl": "https://openrouter.ai/api/v1", "apiKey": "placeholder" },
+					"anthropic": { "baseUrl": "https://runtime-anthropic.example.test", "apiKey": "runtime-placeholder" },
+					"custom": { "baseUrl": "https://models.example.test/v1", "apiKey": "runtime" }
+				}
+			},
+			"agents": {
+				"defaults": {
+					"model": {
+						"primary": "openrouter/z-ai/glm-5.2",
+						"fallbacks": ["openrouter/google/gemini-3.5-flash"]
+					},
+					"models": {
+						"openrouter/z-ai/glm-5.2": { "alias": "GLM 5.2" },
+						"openrouter/google/gemini-3.5-flash": { "alias": "Gemini Flash" },
+						"anthropic/claude-sonnet-4-6": { "alias": "Claude Sonnet 4.6" },
+						"custom/runtime-model": { "alias": "Runtime Model" }
+					}
+				}
+			}
+		}`
+		previousState := `{
+			"version": 1,
+			"entries": {
+				"models.providers": ["anthropic", "openrouter"],
+				"agents.defaults.models": [
+					"anthropic/claude-sonnet-4-6",
+					"openrouter/google/gemini-3.5-flash",
+					"openrouter/z-ai/glm-5.2"
+				],
+				"channels": [],
+				"plugins.entries": []
+			}
+		}`
+
+		result := runMergeJS(t, mergeTestSetup{
+			operatorJSON: operatorJSON,
+			pvcJSON:      pvcJSON,
+			pvcFiles: map[string]string{
+				".operator/managed-runtime-config.json": previousState,
+			},
+			extraEnv: map[string]string{
+				"CLAW_CONFIG_MANAGEMENT": "user",
+			},
+		})
+
+		_, hasOpenRouterProvider := nestedValue(result.config, "models.providers.openrouter")
+		assert.False(t, hasOpenRouterProvider, "operator-managed provider removed from the CR should be pruned")
+
+		customBaseURL, hasCustom := nestedValue(result.config, "models.providers.custom.baseUrl")
+		require.True(t, hasCustom, "runtime-only provider should be preserved")
+		assert.Equal(t, "https://models.example.test/v1", customBaseURL)
+		anthropicBaseURL, hasAnthropic := nestedValue(result.config, "models.providers.anthropic.baseUrl")
+		require.True(t, hasAnthropic, "still-declared operator-managed provider should remain")
+		assert.Equal(t, "https://api.anthropic.com", anthropicBaseURL,
+			"previously operator-managed provider should refresh from the CR")
+
+		models, hasModels := nestedValue(result.config, "agents.defaults.models")
+		require.True(t, hasModels, "models should be present")
+		modelsMap := models.(map[string]any)
+		assert.NotContains(t, modelsMap, "openrouter/z-ai/glm-5.2")
+		assert.NotContains(t, modelsMap, "openrouter/google/gemini-3.5-flash")
+		assert.Contains(t, modelsMap, "custom/runtime-model")
+		assert.Contains(t, modelsMap, "anthropic/claude-sonnet-4-6")
+
+		primary, hasPrimary := nestedValue(result.config, "agents.defaults.model.primary")
+		require.True(t, hasPrimary, "removed operator-managed primary should be replaced")
+		assert.Equal(t, "anthropic/claude-sonnet-4-6", primary)
+
+		fallbacks, hasFallbacks := nestedValue(result.config, "agents.defaults.model.fallbacks")
+		require.True(t, hasFallbacks, "removed operator-managed fallbacks should be replaced")
+		assert.Equal(t, []any{"anthropic/claude-opus-4-8"}, fallbacks)
+	})
+
+	t.Run("user-managed restart prunes previously operator-managed add-ons removed from CR", func(t *testing.T) {
+		operatorJSON := `{
+			"gateway": { "mode": "local", "bind": "lan", "port": 18789, "auth": { "mode": "token" } },
+			"channels": {
+				"discord": { "enabled": true },
+				"slack": { "enabled": true, "botToken": { "source": "env", "id": "CRED_SLACK_BOT" } }
+			},
+			"plugins": {
+				"entries": {
+					"discord": { "enabled": true },
+					"slack": { "enabled": true }
+				}
+			}
+		}`
+		pvcJSON := `{
+			"channels": {
+				"telegram": { "enabled": true },
+				"slack": { "enabled": false },
+				"custom-channel": { "enabled": true }
+			},
+			"plugins": {
+				"entries": {
+					"telegram": { "enabled": true },
+					"slack": { "enabled": false },
+					"custom-plugin": { "enabled": true }
+				}
+			}
+		}`
+		previousState := `{
+			"version": 1,
+			"entries": {
+				"models.providers": [],
+				"agents.defaults.models": [],
+				"channels": ["slack", "telegram"],
+				"plugins.entries": ["slack", "telegram"]
+			}
+		}`
+
+		result := runMergeJS(t, mergeTestSetup{
+			operatorJSON: operatorJSON,
+			pvcJSON:      pvcJSON,
+			pvcFiles: map[string]string{
+				".operator/managed-runtime-config.json": previousState,
+			},
+			extraEnv: map[string]string{
+				"CLAW_CONFIG_MANAGEMENT": "user",
+			},
+		})
+
+		_, hasTelegramChannel := nestedValue(result.config, "channels.telegram")
+		assert.False(t, hasTelegramChannel, "operator-managed channel removed from the CR should be pruned")
+		_, hasTelegramPlugin := nestedValue(result.config, "plugins.entries.telegram")
+		assert.False(t, hasTelegramPlugin, "operator-managed plugin removed from the CR should be pruned")
+
+		_, hasSlackChannel := nestedValue(result.config, "channels.slack")
+		assert.True(t, hasSlackChannel, "still-declared operator-managed channel should remain")
+		_, hasSlackPlugin := nestedValue(result.config, "plugins.entries.slack")
+		assert.True(t, hasSlackPlugin, "still-declared operator-managed plugin should remain")
+		slackPluginEnabled, hasSlackPluginEnabled := nestedValue(result.config, "plugins.entries.slack.enabled")
+		require.True(t, hasSlackPluginEnabled, "operator-managed plugin config should be refreshed")
+		assert.Equal(t, true, slackPluginEnabled)
+		_, hasDiscordChannel := nestedValue(result.config, "channels.discord")
+		assert.True(t, hasDiscordChannel, "new operator-managed channel should be added")
+		_, hasDiscordPlugin := nestedValue(result.config, "plugins.entries.discord")
+		assert.True(t, hasDiscordPlugin, "new operator-managed plugin should be added")
+		_, hasCustomChannel := nestedValue(result.config, "channels.custom-channel")
+		assert.True(t, hasCustomChannel, "runtime-only channel should be preserved")
+		_, hasCustomPlugin := nestedValue(result.config, "plugins.entries.custom-plugin")
+		assert.True(t, hasCustomPlugin, "runtime-only plugin should be preserved")
 	})
 
 	t.Run("user-managed first boot seeds agent files from configmap archive without operator skills", func(t *testing.T) {

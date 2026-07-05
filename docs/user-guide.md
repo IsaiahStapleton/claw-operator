@@ -1375,9 +1375,66 @@ spec:
 Set `spec.config.management: user` when users should manage OpenClaw through the normal OpenClaw files and UI instead of through CR fields.
 
 Cluster admins can disable this opt-in mode for an operator deployment by
-setting `DISABLE_USER_CONFIG_MANAGEMENT=true` on the operator manager. When
-disabled, any `Claw` with `spec.config.management: user` is rejected with a
-validation failure and operator-managed config remains the only supported mode.
+setting `DISABLE_USER_CONFIG_MANAGEMENT=true` on the operator manager. The
+default manager deployment sets `DISABLE_USER_CONFIG_MANAGEMENT=false`, which
+allows users to opt in by setting `spec.config.management: user`. When disabled,
+any `Claw` with `spec.config.management: user` is rejected with a validation
+failure and operator-managed config remains the only supported mode.
+
+| Area | `management: operator` | `management: user` |
+| --- | --- | --- |
+| `openclaw.json` | Operator merge runs every pod start; operator-owned keys are re-applied from the CR | User and agent edits persist across pod restarts except for operator-owned infrastructure and tracked proxy-backed keys |
+| OpenClaw UI/CLI config edits | Safe for runtime-only keys, but operator-owned keys may be overwritten on restart | Durable for user-owned runtime config |
+| Skills and workspace files | CR-managed skills/files may be re-applied by the operator | Seeded once, then owned by the user/agent |
+| Gateway bind/auth/update settings | Operator-owned | Operator-owned |
+| Secret/proxy-backed integrations | Managed through the CR or Deployer | Managed through the CR or Deployer |
+| Runtime-only tweaks | Prefer CR fields for declarative operation | Prefer OpenClaw UI, CLI, or config file edits |
+
+#### What users can do in user-managed mode
+
+In user-managed mode, users and their agents can do things that are not reliable
+in operator-managed mode:
+
+- Edit `openclaw.json` through the OpenClaw UI, CLI, gateway tools, or file
+  edits and keep those changes after pod restarts.
+- Persist changes to skills, deployment instructions, plugins, MCP config,
+  workspace files, persona/session/runtime settings, hooks, cron jobs, UI
+  preferences, and other non-secret runtime config.
+- Let the agent update its own durable operating instructions, including
+  user-owned skills under `/home/node/.openclaw/skills`.
+- Use normal OpenClaw workflows for user-owned config instead of encoding every
+  change in `spec.config.raw`.
+
+User-managed mode does not make the gateway pod own cluster security,
+Kubernetes Secrets, proxy routing, NetworkPolicies, gateway auth, or image
+selection. Those remain operator-owned.
+
+#### Proxy-backed configuration
+
+Proxy-backed configuration is any OpenClaw feature that depends on Kubernetes
+Secrets, credential injection, proxy routing, or operator-managed egress. Users
+should add, update, and remove these through the Claw CR or Deployer UI in both
+management modes.
+
+Rule of thumb: if it needs Kubernetes Secrets, proxy injection, egress routing,
+or cluster permissions, use the CR or Deployer. If it is ordinary OpenClaw
+runtime config, such as enabling Workboard, installing a normal plugin, editing
+skills, or changing UI/session settings, the user or agent can manage it
+directly in user-managed mode.
+
+Proxy-backed items include:
+
+- LLM/model providers from `spec.credentials[].provider`
+- Custom providers from `spec.customProviders` when they depend on
+  CR-managed credentials or proxy routing
+- Messaging channels from `spec.credentials[].channel`: `telegram`, `discord`,
+  `slack`, and `whatsapp`
+- API/domain credentials from `spec.credentials[].domain`
+- GitHub/repo access credentials
+- Kubernetes credentials
+- API-keyed web search providers such as Brave and Tavily
+- MCP servers that use CR-provided secrets or environment variables
+- Egress allowlists and proxy routes needed for external services
 
 In user-managed mode, the operator:
 
@@ -1388,12 +1445,13 @@ In user-managed mode, the operator:
 - Does not inject the operator's CR-management platform/Kubernetes skills, bootstrap hook, or `spec.plugins` init container
 - Seeds a user-owned deployment context skill at `skills/deployment/SKILL.md` if that file does not already exist
 
-Provider and model config from the CR is a first-boot seed in user-managed mode. This lets dashboards create a working instance with an initial provider/model, then lets users change providers and models at runtime without the operator re-adding or overwriting those choices on every restart.
+Provider and model config from the CR is synced as operator-owned runtime config in user-managed mode. This lets dashboards create a working instance with proxy-backed providers and models while preserving direct OpenClaw edits. On pod restart, CR additions are merged into `openclaw.json`; CR removals prune keys the operator previously managed; runtime-only keys added with OpenClaw config remain user-owned.
 
 When runtime config fields are set on the CR in user-managed mode, the operator
-logs a warning that those fields are seed-only after first boot. Ongoing
-changes to runtime config should be made through OpenClaw itself. This applies
-to fields such as `spec.config.raw`, provider/model declarations,
+logs a warning that CR-backed runtime fields and direct OpenClaw config share
+ownership. Proxy-backed provider/model and add-on changes should be made through
+the CR or Deployer; other ongoing changes to runtime config should be made
+through OpenClaw itself. This applies to fields such as `spec.config.raw`, provider/model declarations,
 `spec.customProviders`, `spec.mcpServers`, `spec.webSearch`, `spec.webFetch`,
 `spec.plugins`, `spec.workspace`, and `spec.skills`. Infrastructure fields such
 as `spec.auth`, Secret-backed credential routing, NetworkPolicy settings,

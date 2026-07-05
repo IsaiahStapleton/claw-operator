@@ -103,6 +103,7 @@ data:
     const fs = require("fs");
     const path = require("path");
     const childProcess = require("child_process");
+    const util = require("util");
     const mode = process.env.CLAW_CONFIG_MODE || "merge";
     const management = process.env.CLAW_CONFIG_MANAGEMENT || "operator";
     const agentFilesApplyPolicy = process.env.AGENT_FILES_APPLY_POLICY || "IfMissing";
@@ -238,6 +239,17 @@ data:
       return JSON.parse(JSON.stringify(value));
     }
 
+    const managedRuntimePaths = [
+      { name: "models.providers", parts: ["models", "providers"] },
+      { name: "agents.defaults.models", parts: ["agents", "defaults", "models"] },
+      { name: "channels", parts: ["channels"] },
+      { name: "plugins.entries", parts: ["plugins", "entries"] },
+    ];
+
+    function managedRuntimeStatePath() {
+      return path.join(pvcDir, ".operator", "managed-runtime-config.json");
+    }
+
     function nestedObject(obj, parts) {
       let current = obj;
       for (const part of parts) {
@@ -270,12 +282,122 @@ data:
       }
     }
 
-    function userManagedConfig(base, ops) {
+    function mergeManagedObjectEntries(target, source, parts, previousState, stateName) {
+      const sourceMap = nestedObject(source, parts);
+      if (!sourceMap) return [];
+
+      const previousKeys = new Set(previousState.entries?.[stateName] || []);
+      const targetMap = ensureNestedObject(target, parts);
+      const ownedKeys = [];
+      for (const [key, value] of Object.entries(sourceMap)) {
+        if (targetMap[key] === undefined) {
+          targetMap[key] = value;
+          ownedKeys.push(key);
+          continue;
+        }
+        if (previousKeys.has(key)) {
+          targetMap[key] = value;
+          ownedKeys.push(key);
+          continue;
+        }
+        if (util.isDeepStrictEqual(targetMap[key], value)) {
+          ownedKeys.push(key);
+        }
+      }
+      return ownedKeys.sort();
+    }
+
+    function readManagedRuntimeState() {
+      const statePath = managedRuntimeStatePath();
+      if (!fs.existsSync(statePath)) return { version: 1, entries: {} };
+      try {
+        const state = JSON.parse(fs.readFileSync(statePath, "utf8"));
+        if (!state || typeof state !== "object" || !state.entries || typeof state.entries !== "object") {
+          return { version: 1, entries: {} };
+        }
+        return state;
+      } catch (err) {
+        console.warn("[init-config] managed runtime state is invalid; preserving user config without pruning");
+        return { version: 1, entries: {} };
+      }
+    }
+
+    function writeManagedRuntimeState(state) {
+      const statePath = managedRuntimeStatePath();
+      fs.mkdirSync(path.dirname(statePath), { recursive: true });
+      fs.writeFileSync(statePath, JSON.stringify(state, null, 2), { mode: 0o600 });
+    }
+
+    function managedRuntimeState(ops) {
+      const entries = {};
+      for (const runtimePath of managedRuntimePaths) {
+        const sourceMap = nestedObject(ops, runtimePath.parts);
+        entries[runtimePath.name] = sourceMap ? Object.keys(sourceMap).sort() : [];
+      }
+      return { version: 1, entries };
+    }
+
+    function pruneManagedRuntimeEntries(target, previousState, desiredState) {
+      const removedModels = new Set();
+      for (const runtimePath of managedRuntimePaths) {
+        const previousKeys = new Set(previousState.entries?.[runtimePath.name] || []);
+        const desiredKeys = new Set(desiredState.entries[runtimePath.name] || []);
+        if (previousKeys.size === 0) continue;
+
+        const targetMap = nestedObject(target, runtimePath.parts);
+        if (!targetMap) continue;
+        for (const key of previousKeys) {
+          if (desiredKeys.has(key)) continue;
+          if (targetMap[key] === undefined) continue;
+          delete targetMap[key];
+          if (runtimePath.name === "agents.defaults.models") removedModels.add(key);
+        }
+      }
+      return removedModels;
+    }
+
+    function pruneRemovedModelSelections(target, ops, removedModels) {
+      if (removedModels.size === 0) return;
+      const modelSelection = nestedObject(target, ["agents", "defaults", "model"]);
+      if (!modelSelection) return;
+
+      const operatorSelection = nestedObject(ops, ["agents", "defaults", "model"]) || {};
+      if (removedModels.has(modelSelection.primary)) {
+        if (operatorSelection.primary && !removedModels.has(operatorSelection.primary)) {
+          modelSelection.primary = operatorSelection.primary;
+        } else {
+          delete modelSelection.primary;
+        }
+      }
+
+      if (Array.isArray(modelSelection.fallbacks)) {
+        const fallbacks = modelSelection.fallbacks.filter((model) => !removedModels.has(model));
+        if (fallbacks.length > 0) {
+          modelSelection.fallbacks = fallbacks;
+        } else if (Array.isArray(operatorSelection.fallbacks)) {
+          modelSelection.fallbacks = operatorSelection.fallbacks.filter((model) => !removedModels.has(model));
+        } else {
+          delete modelSelection.fallbacks;
+        }
+      }
+    }
+
+    function userManagedConfig(base, ops, previousState) {
+      const nextState = { version: 1, entries: {} };
       const result = deepMerge(cloneConfig(base), managedInfrastructureConfig(ops));
-      mergeMissingObjectEntries(result, ops, ["models", "providers"]);
-      mergeMissingObjectEntries(result, ops, ["agents", "defaults", "models"]);
+      for (const runtimePath of managedRuntimePaths) {
+        nextState.entries[runtimePath.name] = mergeManagedObjectEntries(
+          result,
+          ops,
+          runtimePath.parts,
+          previousState,
+          runtimePath.name
+        );
+      }
       mergeMissingObjectEntries(result, ops, ["agents", "defaults", "model"]);
-      return result;
+      const removedModels = pruneManagedRuntimeEntries(result, previousState, nextState);
+      pruneRemovedModelSelections(result, ops, removedModels);
+      return { config: result, state: nextState };
     }
 
     function prepareAgentFilesSource() {
@@ -422,8 +544,10 @@ data:
 
     if (management === "user" && fs.existsSync(pvcPath)) {
       let base = JSON.parse(fs.readFileSync(pvcPath, "utf8"));
-      const merged = userManagedConfig(base, ops);
-      fs.writeFileSync(pvcPath, JSON.stringify(merged, null, 2), { mode: 0o600 });
+      const previousState = readManagedRuntimeState();
+      const merged = userManagedConfig(base, ops, previousState);
+      fs.writeFileSync(pvcPath, JSON.stringify(merged.config, null, 2), { mode: 0o600 });
+      writeManagedRuntimeState(merged.state);
       console.log("[init-config] preserved user openclaw.json and refreshed operator-provided runtime additions");
     } else if (mode === "merge" && fs.existsSync(pvcPath)) {
       let base = seed;
@@ -450,6 +574,7 @@ data:
       console.log("[init-config] merged operator.json into existing openclaw.json");
     } else {
       fs.writeFileSync(pvcPath, JSON.stringify(mergeConfigs(seedConfig, ops), null, 2), { mode: 0o600 });
+      if (management === "user") writeManagedRuntimeState(managedRuntimeState(ops));
       console.log(`[init-config] wrote openclaw.json (mode=${mode}, first_run=${!fs.existsSync(pvcPath)})`);
     }
 
@@ -732,8 +857,7 @@ data:
     - Skills under `/home/node/.openclaw/skills`, including this deployment skill,
       are user-owned. You may edit them when the user asks or when you need to
       update durable operating instructions.
-    - Provider and model configuration may have been seeded during first boot, but
-      later provider/model changes are user-owned and should be made through normal
+    - Non-secret runtime config is user-owned and should be managed through normal
       OpenClaw config workflows.
 
     ## What the operator still owns
@@ -744,6 +868,21 @@ data:
       requests go through a credential-injecting proxy that replaces placeholder
       credentials with real secrets. Messaging channel tokens are the exception and
       may be mounted as Secret-backed gateway env vars for channel runtime auth.
+    - Proxy-backed provider/model and add-on changes should be made through the
+      Claw CR or Deployer UI, not only by editing OpenClaw config. Proxy-backed
+      items include LLM providers, custom providers that use CR credentials,
+      messaging channels, domain/API credentials, GitHub/repo access, Kubernetes
+      credentials, API-keyed web search providers, MCP servers with CR-provided
+      secrets or env vars, and egress/proxy routes.
+      Rule of thumb: if it needs Kubernetes Secrets, proxy injection, egress
+      routing, or cluster permissions, use the CR or Deployer. If it is ordinary
+      OpenClaw runtime config, such as enabling Workboard, installing a normal
+      plugin, editing skills, or changing UI/session settings, the user or agent
+      can manage it directly.
+    - CR-backed provider/model/channel/plugin runtime entries are synced into
+      `openclaw.json` on pod restart. The operator tracks entries it last managed,
+      so CR removals prune those operator-managed keys while direct OpenClaw config
+      entries remain user-owned.
     - Network egress is restricted. If an external service is unreachable, the user
       may need an operator/admin to add the right credential or allowlist entry to
       the Claw custom resource.
@@ -922,12 +1061,14 @@ data:
     - Remove a provider credential → its models disappear from the picker
     - Add a custom provider → its declared models appear in the picker
 
-    In user-managed mode, provider/model additions from the CR are merged into
-    `openclaw.json` when the pod restarts, but existing runtime entries win and
-    removals should be made directly with `openclaw config`.
+    In user-managed mode, provider/model entries from the CR are synced into
+    `openclaw.json` when the pod restarts. The operator tracks the runtime keys
+    it last managed, so CR removals prune those operator-managed keys while
+    direct OpenClaw config entries remain user-owned.
 
-    You do NOT need to manually edit the model list when providers change. The operator
-    handles it in operator-managed mode.
+    You do NOT need to manually edit the model list when CR-managed providers change.
+    The operator handles this in operator-managed mode and for tracked CR-owned
+    provider/model entries in user-managed mode.
 
     ## Custom / self-hosted providers (`spec.customProviders`)
 

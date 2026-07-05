@@ -461,8 +461,8 @@ func (r *ClawResourceReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	}
 	if fields := userManagedRuntimeConfigFields(instance); len(fields) > 0 {
 		logger.Info(
-			"Operating in user-managed config mode; CR runtime config fields are mostly user-owned after first boot. "+
-				"Provider and model additions are merged additively; make other ongoing changes directly in OpenClaw config.",
+			"Operating in user-managed config mode; CR-backed runtime fields and direct OpenClaw config share ownership. "+
+				"Use the CR or Deployer for proxy-backed providers/models/add-ons; make other runtime config changes directly in OpenClaw config.",
 			"fields", strings.Join(fields, ", "),
 		)
 	}
