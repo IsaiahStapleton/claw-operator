@@ -889,7 +889,9 @@ func (r *ClawResourceReconciler) enrichConfigAndNetworkPolicy(
 		return fmt.Errorf("failed to inject additional egress rules: %w", err)
 	}
 	pluginsForHash := []string(nil)
-	if !userManagedConfig(instance) {
+	if userManagedConfig(instance) {
+		pluginsForHash = operatorRequiredPlugins(instance)
+	} else {
 		pluginsForHash = effectivePlugins(instance)
 	}
 	if err := stampGatewayConfigHash(objects, instance.Name, pluginsForHash); err != nil {
@@ -964,10 +966,15 @@ func (r *ClawResourceReconciler) configureDeployments(
 		meta.RemoveStatusCondition(&instance.Status.Conditions,
 			clawv1alpha1.ConditionTypePluginCompatibility)
 	}
-	if !pluginInstallationDisabled(instance) && !userManagedConfig(instance) {
+	if !pluginInstallationDisabled(instance) {
 		plugins := effectivePlugins(instance)
+		preserveUnmanagedPlugins := false
+		if userManagedConfig(instance) {
+			plugins = operatorRequiredPlugins(instance)
+			preserveUnmanagedPlugins = true
+		}
 		if len(plugins) > 0 {
-			if err := configurePluginsInitContainer(objects, instance, plugins); err != nil {
+			if err := configurePluginsInitContainer(objects, instance, plugins, preserveUnmanagedPlugins); err != nil {
 				return fmt.Errorf("failed to configure plugins init container: %w", err)
 			}
 		}

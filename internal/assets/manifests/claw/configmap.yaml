@@ -883,6 +883,9 @@ data:
       `openclaw.json` on pod restart. The operator tracks entries it last managed,
       so CR removals prune those operator-managed keys while direct OpenClaw config
       entries remain user-owned.
+    - External plugins required by CR-backed features, such as Anthropic Vertex or
+      diagnostics plugins, are operator-owned. Normal plugins are user-owned and
+      should be installed through OpenClaw directly.
     - Network egress is restricted. If an external service is unreachable, the user
       may need an operator/admin to add the right credential or allowlist entry to
       the Claw custom resource.
