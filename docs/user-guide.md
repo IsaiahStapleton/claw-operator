@@ -1442,7 +1442,10 @@ In user-managed mode, the operator:
 - Preserves runtime edits to `openclaw.json`, skills, plugins, MCP config, and workspace files on later restarts
 - Continues to enforce gateway infrastructure (`gateway.mode`, `gateway.bind`, `gateway.port`, gateway auth, and update config)
 - Continues to route provider/API credentials through the proxy so those real secrets do not land in the gateway pod
-- Does not inject the operator's CR-management platform/Kubernetes skills, bootstrap hook, or `spec.plugins` init container
+- Installs operator-required external plugins for CR-backed features, such as
+  Anthropic Vertex and diagnostics plugins, but does not install arbitrary
+  `spec.plugins` entries
+- Does not inject the operator's CR-management platform/Kubernetes skills or bootstrap hook
 - Seeds a user-owned deployment context skill at `skills/deployment/SKILL.md` if that file does not already exist
 
 Provider and model config from the CR is synced as operator-owned runtime config in user-managed mode. This lets dashboards create a working instance with proxy-backed providers and models while preserving direct OpenClaw edits. On pod restart, CR additions are merged into `openclaw.json`; CR removals prune keys the operator previously managed; runtime-only keys added with OpenClaw config remain user-owned.
@@ -2258,7 +2261,12 @@ spec:
 EOF
 ```
 
-When `spec.plugins` is non-empty, the operator adds an `init-plugins` init container that runs `openclaw plugins install clawhub:<pkg>` for each entry. The init container:
+In operator-managed mode, when `spec.plugins` is non-empty, the operator adds
+an `init-plugins` init container that runs `openclaw plugins install
+clawhub:<pkg>` for each entry. In user-managed mode, normal plugins are
+user-owned and should be installed through OpenClaw directly; the operator only
+uses `init-plugins` for external plugins required by CR-backed features, such as
+Anthropic Vertex or diagnostics plugins. The init container:
 
 - Uses the same OpenClaw image as the gateway
 - Routes traffic through the MITM proxy (required by the egress NetworkPolicy)
@@ -2291,6 +2299,9 @@ Changing the plugin list triggers a pod rollout (the operator includes the plugi
 
 - The operator only manages plugins declared in `spec.plugins`. User-installed plugins are never touched by the operator (not upgraded, not removed).
 - If a user manually installs the same plugin that is also declared in `spec.plugins`, the operator takes ownership of it on the next restart.
+- In user-managed mode, `spec.plugins` entries are not installed by the
+  operator. The operator still installs external plugins required by CR-backed
+  features and preserves other extension directories.
 
 ---
 

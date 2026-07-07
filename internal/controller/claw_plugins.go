@@ -52,8 +52,7 @@ func pluginPackageName(spec string) string {
 // Duplicates are removed by package name (spec declarations take precedence
 // over implicit ones, allowing users to override the pinned version).
 func effectivePlugins(instance *clawv1alpha1.Claw) []string {
-	implicit := requiredProviderPlugins(instance)
-	implicit = append(implicit, requiredDiagnosticsPlugins(instance)...)
+	implicit := operatorRequiredPlugins(instance)
 	if len(implicit) == 0 {
 		return instance.Spec.Plugins
 	}
@@ -69,6 +68,15 @@ func effectivePlugins(instance *clawv1alpha1.Claw) []string {
 		}
 	}
 	return merged
+}
+
+// operatorRequiredPlugins returns plugins that are infrastructure for CR-backed
+// features. These remain operator-managed even when OpenClaw runtime config is
+// otherwise user-managed.
+func operatorRequiredPlugins(instance *clawv1alpha1.Claw) []string {
+	plugins := requiredProviderPlugins(instance)
+	plugins = append(plugins, requiredDiagnosticsPlugins(instance)...)
+	return plugins
 }
 
 // requiredProviderPlugins inspects credentials and returns plugin package specs
@@ -140,7 +148,8 @@ func requiredDiagnosticsPlugins(instance *clawv1alpha1.Claw) []string {
 	return plugins
 }
 
-func generatePluginInstallScript(plugins []string) string {
+func generatePluginInstallScript(plugins []string, preserveUnmanagedOpt ...bool) string {
+	preserveUnmanaged := len(preserveUnmanagedOpt) > 0 && preserveUnmanagedOpt[0]
 	var b strings.Builder
 	b.WriteString(`set -e
 EXT="/home/node/.openclaw/extensions"
@@ -155,12 +164,16 @@ if [ -f "$MANIFEST" ]; then
     rm -rf -- "$target"
   done < "$MANIFEST"
   rm -f "$MANIFEST"
-else
+`)
+	if !preserveUnmanaged {
+		b.WriteString(`else
   # No manifest from a previous successful install — clean all extension
   # dirs to avoid "plugin already exists" errors from orphaned directories
   # left by pods killed mid-install or pre-manifest operator versions.
   find "$EXT" -mindepth 1 -maxdepth 1 -type d -exec rm -rf {} + 2>/dev/null || true
-fi
+`)
+	}
+	b.WriteString(`fi
 mkdir -p "$EXT"
 ls "$EXT" 2>/dev/null | sort > /tmp/before-plugins.txt
 `)
@@ -181,6 +194,7 @@ func configurePluginsInitContainer(
 	objects []*unstructured.Unstructured,
 	instance *clawv1alpha1.Claw,
 	plugins []string,
+	preserveUnmanagedOpt ...bool,
 ) error {
 	if len(plugins) == 0 {
 		return nil
@@ -218,7 +232,8 @@ func configurePluginsInitContainer(
 		initContainers, _, _ := unstructured.NestedSlice(obj.Object, "spec", "template", "spec", "initContainers")
 
 		proxyHost := fmt.Sprintf("http://%s-proxy:8080", instance.Name)
-		script := generatePluginInstallScript(plugins)
+		preserveUnmanaged := len(preserveUnmanagedOpt) > 0 && preserveUnmanagedOpt[0]
+		script := generatePluginInstallScript(plugins, preserveUnmanaged)
 
 		initContainers = append(initContainers, map[string]any{
 			"name":            PluginsInitContainerName,

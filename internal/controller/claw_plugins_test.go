@@ -146,6 +146,13 @@ func TestGeneratePluginInstallScript(t *testing.T) {
 		assert.Contains(t, script, `find "$EXT" -mindepth 1 -maxdepth 1 -type d -exec rm -rf {} +`)
 	})
 
+	t.Run("should preserve unmanaged extension dirs when requested", func(t *testing.T) {
+		script := generatePluginInstallScript([]string{"@openclaw/anthropic-vertex-provider"}, true)
+		assert.Contains(t, script, `if [ -f "$MANIFEST" ]; then`)
+		assert.NotContains(t, script, `find "$EXT" -mindepth 1 -maxdepth 1 -type d -exec rm -rf {} +`)
+		assert.Contains(t, script, "openclaw plugins install clawhub:'@openclaw/anthropic-vertex-provider'")
+	})
+
 	t.Run("should guard against path traversal in manifest entries", func(t *testing.T) {
 		script := generatePluginInstallScript([]string{"@openclaw/matrix"})
 		assert.Contains(t, script, `""|.|..|*/*|*..*)`)
@@ -667,7 +674,7 @@ func TestPluginsIntegration(t *testing.T) {
 		}
 	})
 
-	t.Run("should not add init-plugins container in user-managed mode", func(t *testing.T) {
+	t.Run("should not add init-plugins container for spec.plugins only in user-managed mode", func(t *testing.T) {
 		t.Cleanup(func() { deleteAndWaitAllResources(t, namespace) })
 
 		secret := createTestAPIKeySecret(aiModelSecret, namespace, aiModelSecretKey, aiModelSecretValue)
@@ -694,8 +701,55 @@ func TestPluginsIntegration(t *testing.T) {
 
 		for _, ic := range deployment.Spec.Template.Spec.InitContainers {
 			assert.NotEqual(t, PluginsInitContainerName, ic.Name,
-				"Deployment should not have init-plugins container in user-managed mode")
+				"Deployment should not have init-plugins container for explicit spec.plugins in user-managed mode")
 		}
+	})
+
+	t.Run("should install operator-required plugins in user-managed mode", func(t *testing.T) {
+		t.Cleanup(func() { deleteAndWaitAllResources(t, namespace) })
+
+		secret := createTestAPIKeySecret(aiModelSecret, namespace, aiModelSecretKey, aiModelSecretValue)
+		require.NoError(t, k8sClient.Create(ctx, secret))
+
+		instance := &clawv1alpha1.Claw{}
+		instance.Name = testInstanceName
+		instance.Namespace = namespace
+		instance.Spec.Config = &clawv1alpha1.ConfigSpec{Management: clawv1alpha1.ConfigManagementUser}
+		instance.Spec.Credentials = append(testCredentials(), clawv1alpha1.CredentialSpec{
+			Name:     "anthropic-vertex",
+			Type:     clawv1alpha1.CredentialTypeGCP,
+			Provider: "anthropic",
+			SecretRef: []clawv1alpha1.SecretRefEntry{
+				{Name: aiModelSecret, Key: aiModelSecretKey},
+			},
+			Domain: ".googleapis.com",
+			GCP:    &clawv1alpha1.GCPConfig{Project: "p", Location: "us-east5"},
+		})
+		instance.Spec.Plugins = []string{"@openclaw/matrix"}
+		require.NoError(t, k8sClient.Create(ctx, instance))
+
+		reconciler := createClawReconciler()
+		reconcileClaw(t, ctx, reconciler, testInstanceName, namespace)
+
+		deployment := &appsv1.Deployment{}
+		waitFor(t, timeout, interval, func() bool {
+			return k8sClient.Get(ctx, client.ObjectKey{
+				Name:      getClawDeploymentName(testInstanceName),
+				Namespace: namespace,
+			}, deployment) == nil
+		}, "Deployment should be created")
+
+		for _, ic := range deployment.Spec.Template.Spec.InitContainers {
+			if ic.Name == PluginsInitContainerName {
+				script := ic.Command[2]
+				assert.Contains(t, script, "@openclaw/anthropic-vertex-provider")
+				assert.NotContains(t, script, "openclaw plugins install clawhub:'@openclaw/matrix'")
+				assert.Contains(t, script, `.operator-managed`)
+				assert.NotContains(t, script, `find "$EXT" -mindepth 1 -maxdepth 1 -type d -exec rm -rf {} +`)
+				return
+			}
+		}
+		t.Fatal("init-plugins container not found")
 	})
 
 	t.Run("should install multiple plugins", func(t *testing.T) {
