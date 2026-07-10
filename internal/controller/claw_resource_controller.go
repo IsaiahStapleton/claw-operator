@@ -663,6 +663,8 @@ func (r *ClawResourceReconciler) Reconcile(ctx context.Context, req ctrl.Request
 		meta.RemoveStatusCondition(&instance.Status.Conditions, clawv1alpha1.ConditionTypeMcpServersConfigured)
 	}
 
+	setMemoryStackCondition(instance)
+
 	// Filter out Route (applied in phase above) and proxy ConfigMap (controller-managed)
 	remainingObjects := []*unstructured.Unstructured{}
 	for _, obj := range objects {
@@ -829,6 +831,9 @@ func (r *ClawResourceReconciler) enrichConfigAndNetworkPolicy(
 	injectProviderPlugins(config, instance)
 	injectModelCatalog(config, instance)
 	injectMemorySearch(config, instance)
+	// userConfig was parsed above; reuse it to decide memorySearch ownership
+	// instead of re-parsing spec.config.raw inside injectMemoryStack.
+	injectMemoryStack(config, instance, userHasMemorySearchConfig(userConfig))
 	if err := injectChannels(config, instance); err != nil {
 		return fmt.Errorf("failed to inject channels: %w", err)
 	}
@@ -852,6 +857,9 @@ func (r *ClawResourceReconciler) enrichConfigAndNetworkPolicy(
 	}
 	if err := injectWorkspaceFiles(objects, instance); err != nil {
 		return fmt.Errorf("failed to inject workspace files: %w", err)
+	}
+	if err := injectMemoryWorkspaceFiles(objects, instance); err != nil {
+		return fmt.Errorf("failed to inject memory workspace files: %w", err)
 	}
 	if !userManagedConfig(instance) {
 		if err := injectSkillFiles(objects, instance); err != nil {

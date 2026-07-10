@@ -27,6 +27,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -705,6 +706,9 @@ func TestWorkspaceIntegration(t *testing.T) {
 				Workspace: &clawv1alpha1.WorkspaceSpec{
 					SkipBootstrap: true,
 				},
+				// Disable the memory stack so no _ws_ keys are auto-seeded;
+				// this test verifies workspace-file and skill injection only.
+				Memory: &clawv1alpha1.MemorySpec{Enabled: ptr.To(false)},
 			},
 		}
 		require.NoError(t, k8sClient.Create(ctx, instance))

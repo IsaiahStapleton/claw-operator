@@ -44,6 +44,11 @@ bundle/
 catalog/
 
 .claude/settings.local.json
+<<<<<<< HEAD
 
 # Environment files
 .env*
+=======
+# SDD workflow scratch (not committed to the repo)
+.superpowers/
+>>>>>>> d61825a (feat(memory): opt-in default memory/context stack)

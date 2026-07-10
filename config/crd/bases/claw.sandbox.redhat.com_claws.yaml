@@ -642,6 +642,21 @@ spec:
                   McpServers declares MCP servers injected into OpenClaw's config.
                   Map keys are server names as they appear in the mcp.servers config.
                 type: object
+              memory:
+                description: |-
+                  Memory configures the operator-managed memory/context stack (vector
+                  recall, memory-wiki, dreaming). Disabled by default (opt-in).
+                  Set spec.memory.enabled: true to activate the stack.
+                properties:
+                  enabled:
+                    default: false
+                    description: |-
+                      Enabled controls the memory/context stack. Defaults to false (opt-in).
+                      Set spec.memory.enabled: true to turn on the memory/context stack
+                      (native vectors, memory-wiki, dreaming). A nil or absent field means
+                      disabled.
+                    type: boolean
+                type: object
               metrics:
                 description: |-
                   Metrics configures Prometheus metrics for the gateway. The gateway sends
@@ -899,9 +914,9 @@ spec:
                 type: object
               plugins:
                 description: |-
-                  Plugins lists OpenClaw plugins to install via an init container before
-                  the gateway starts. Each entry is a package name (e.g. "@openclaw/matrix").
-                  The operator runs `openclaw plugins install clawhub:<pkg>` for each entry.
+                  Plugins lists OpenClaw plugins to install from clawhub via an init
+                  container before the gateway starts (e.g. "@openclaw/matrix" runs
+                  `openclaw plugins install clawhub:@openclaw/matrix`).
                 items:
                   type: string
                 type: array
