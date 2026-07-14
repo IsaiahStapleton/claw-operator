@@ -37,16 +37,18 @@ func memoryStackEnabled(instance *clawv1alpha1.Claw) bool {
 
 // userHasMemoryStackConfig reports whether the merged config already carries
 // user-set plugin-level memory configuration. If so, the operator does not
-// inject the default stack (the user owns that config). It treats a user-set
-// plugins.slots.contextEngine, or any of the plugins.entries the stack writes
-// (memory-core, memory-wiki), as an override.
+// inject the default stack (the user owns that config). Only a user-set
+// plugins.slots.contextEngine counts: that replaces the native context engine
+// wholesale, so seeding the native layers alongside it would be incoherent.
+// A user-set plugins.entries.memory-core / memory-wiki does NOT suppress
+// seeding. Those are tuning knobs on layers the stack still owns (e.g.
+// dreaming.phases.deep.minScore), and injectMemoryStack seeds its defaults
+// without overwriting keys the user set, so an override survives the merge.
+// Treating a single tuned key as "user owns the whole stack" silently disabled
+// every layer, which is the opposite of what the user asked for.
 // memorySearch is intentionally NOT checked here: injectMemorySearch always
 // sets memorySearch.provider or memorySearch.enabled, so checking it would
 // cause the stack to skip on every normal operator-managed reconcile.
-// Note: a user who sets only memorySearch in spec.config.raw does NOT suppress
-// plugin-stack seeding (memory-core, memory-wiki still seed); that is by
-// design, since those layers are independent of the vector provider and
-// deep-merge lets users override individual plugin entries.
 func userHasMemoryStackConfig(config map[string]any) bool {
 	plugins, ok := config["plugins"].(map[string]any)
 	if !ok {
@@ -57,14 +59,16 @@ func userHasMemoryStackConfig(config map[string]any) bool {
 			return true
 		}
 	}
-	if entries, ok := plugins["entries"].(map[string]any); ok {
-		for _, name := range []string{"memory-core", "memory-wiki"} {
-			if _, ok := entries[name]; ok {
-				return true
-			}
-		}
-	}
 	return false
+}
+
+// setDefault sets key only when the user has not already set it. injectMemoryStack
+// runs against a config that spec.config.raw has already been deep-merged into, so
+// an unconditional write would clobber the user's value.
+func setDefault(m map[string]any, key string, val any) {
+	if _, ok := m[key]; !ok {
+		m[key] = val
+	}
 }
 
 // userConfiguredMemorySearch reports whether the user set
@@ -95,27 +99,27 @@ func injectMemoryStack(config map[string]any, instance *clawv1alpha1.Claw, userO
 	entries := ensureNestedMap(ensureNestedMap(config, "plugins"), "entries")
 
 	dreaming := ensureNestedMap(ensureNestedMap(ensureNestedMap(entries, "memory-core"), "config"), "dreaming")
-	dreaming["enabled"] = true
+	setDefault(dreaming, "enabled", true)
 
 	wiki := ensureNestedMap(entries, "memory-wiki")
-	wiki["enabled"] = true
+	setDefault(wiki, "enabled", true)
 	wcfg := ensureNestedMap(wiki, "config")
-	wcfg["vaultMode"] = "bridge"
-	ensureNestedMap(wcfg, "vault")["path"] = "~/.openclaw/workspace/wiki/main"
+	setDefault(wcfg, "vaultMode", "bridge")
+	setDefault(ensureNestedMap(wcfg, "vault"), "path", "~/.openclaw/workspace/wiki/main")
 	bridge := ensureNestedMap(wcfg, "bridge")
-	bridge["enabled"] = true
-	bridge["readMemoryArtifacts"] = true
-	bridge["indexDreamReports"] = true
-	bridge["indexDailyNotes"] = true
-	bridge["indexMemoryRoot"] = true
-	bridge["followMemoryEvents"] = true
+	setDefault(bridge, "enabled", true)
+	setDefault(bridge, "readMemoryArtifacts", true)
+	setDefault(bridge, "indexDreamReports", true)
+	setDefault(bridge, "indexDailyNotes", true)
+	setDefault(bridge, "indexMemoryRoot", true)
+	setDefault(bridge, "followMemoryEvents", true)
 	search := ensureNestedMap(wcfg, "search")
-	search["backend"] = "shared"
-	search["corpus"] = "all"
+	setDefault(search, "backend", "shared")
+	setDefault(search, "corpus", "all")
 	render := ensureNestedMap(wcfg, "render")
-	render["preserveHumanBlocks"] = true
-	render["createBacklinks"] = true
-	render["createDashboards"] = true
+	setDefault(render, "preserveHumanBlocks", true)
+	setDefault(render, "createBacklinks", true)
+	setDefault(render, "createDashboards", true)
 }
 
 const memoryHeartbeat = `# Heartbeat checklist

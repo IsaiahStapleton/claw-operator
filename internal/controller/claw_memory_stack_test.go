@@ -124,7 +124,7 @@ func TestInjectMemoryStack(t *testing.T) {
 		assert.Equal(t, true, entries["memory-core"].(map[string]any)["config"].(map[string]any)["dreaming"].(map[string]any)["enabled"], "dreaming seeds with plugin install disabled")
 	})
 
-	t.Run("skips when user configured a native layer entry", func(t *testing.T) {
+	t.Run("preserves a user-set native layer entry but still seeds the rest", func(t *testing.T) {
 		config := map[string]any{
 			"plugins": map[string]any{"entries": map[string]any{"memory-wiki": map[string]any{"enabled": false}}},
 		}
@@ -135,7 +135,29 @@ func TestInjectMemoryStack(t *testing.T) {
 		entries := config["plugins"].(map[string]any)["entries"].(map[string]any)
 		assert.Equal(t, false, entries["memory-wiki"].(map[string]any)["enabled"], "user value preserved")
 		_, hasCore := entries["memory-core"]
-		assert.False(t, hasCore, "no operator entries injected over a user override")
+		assert.True(t, hasCore, "other layers still seed; one tuned key does not disable the stack")
+	})
+
+	t.Run("seeds the stack while honoring a user-tuned dreaming threshold", func(t *testing.T) {
+		config := map[string]any{
+			"plugins": map[string]any{"entries": map[string]any{
+				"memory-core": map[string]any{"config": map[string]any{"dreaming": map[string]any{
+					"phases": map[string]any{"deep": map[string]any{"minScore": 0.45}},
+				}}},
+			}},
+		}
+		instance := &clawv1alpha1.Claw{Spec: clawv1alpha1.ClawSpec{
+			Memory: &clawv1alpha1.MemorySpec{Enabled: ptr.To(true)},
+		}}
+		injectMemoryStack(config, instance, false)
+		entries := config["plugins"].(map[string]any)["entries"].(map[string]any)
+		dreaming := entries["memory-core"].(map[string]any)["config"].(map[string]any)["dreaming"].(map[string]any)
+		assert.Equal(t, true, dreaming["enabled"], "operator still enables dreaming")
+		deep := dreaming["phases"].(map[string]any)["deep"].(map[string]any)
+		assert.Equal(t, 0.45, deep["minScore"], "user threshold survives injection")
+		wiki := entries["memory-wiki"].(map[string]any)
+		assert.Equal(t, true, wiki["enabled"], "memory-wiki still seeds")
+		assert.Equal(t, "bridge", wiki["config"].(map[string]any)["vaultMode"])
 	})
 
 	t.Run("skips when user already configured a context engine", func(t *testing.T) {
