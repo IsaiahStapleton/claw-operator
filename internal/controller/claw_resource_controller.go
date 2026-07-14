@@ -985,8 +985,8 @@ func (r *ClawResourceReconciler) configureDeployments(
 	if err := configureSkillImages(objects, instance); err != nil {
 		return fmt.Errorf("failed to configure skill images: %w", err)
 	}
-	if err := configureGatewayWholeHomeMount(objects, instance.Name); err != nil {
-		return fmt.Errorf("failed to configure gateway home mount: %w", err)
+	if err := configureGatewayContainer(objects, instance); err != nil {
+		return err
 	}
 	if err := configureUserManagedOpenClawFiles(objects, instance); err != nil {
 		return fmt.Errorf("failed to configure user-managed OpenClaw files: %w", err)

@@ -347,6 +347,11 @@ func (in *ClawSpec) DeepCopyInto(out *ClawSpec) {
 		*out = new(WebFetchSpec)
 		**out = **in
 	}
+	if in.Resources != nil {
+		in, out := &in.Resources, &out.Resources
+		*out = new(corev1.ResourceRequirements)
+		(*in).DeepCopyInto(*out)
+	}
 	if in.RepoAccess != nil {
 		in, out := &in.RepoAccess, &out.RepoAccess
 		*out = new(RepoAccessSpec)

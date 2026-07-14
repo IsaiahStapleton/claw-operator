@@ -892,6 +892,85 @@ func configureReadOnlyMounts(obj *unstructured.Unstructured, readOnly []string) 
 
 // configureUserManagedOpenClawFiles sets management-mode-specific configuration
 // for user-managed deployments: the CLAW_CONFIG_MANAGEMENT env var (read by
+// configureGatewayContainer applies the gateway-container tweaks that depend on
+// the Claw spec: the whole-home PVC mount and any spec.resources override.
+func configureGatewayContainer(objects []*unstructured.Unstructured, instance *clawv1alpha1.Claw) error {
+	if err := configureGatewayWholeHomeMount(objects, instance.Name); err != nil {
+		return fmt.Errorf("failed to configure gateway home mount: %w", err)
+	}
+	if err := configureGatewayResources(objects, instance); err != nil {
+		return fmt.Errorf("failed to configure gateway resources: %w", err)
+	}
+	return nil
+}
+
+// configureGatewayResources applies spec.resources to the gateway container.
+// It merges per-key over the manifest defaults rather than replacing the whole
+// block, so setting only limits.memory keeps the default requests and CPU.
+func configureGatewayResources(objects []*unstructured.Unstructured, instance *clawv1alpha1.Claw) error {
+	if instance.Spec.Resources == nil {
+		return nil
+	}
+	overrides := map[string]corev1.ResourceList{
+		"requests": instance.Spec.Resources.Requests,
+		"limits":   instance.Spec.Resources.Limits,
+	}
+
+	gatewayName := getClawDeploymentName(instance.Name)
+	for _, obj := range objects {
+		if obj.GetKind() != DeploymentKind || obj.GetName() != gatewayName {
+			continue
+		}
+
+		containers, found, err := unstructured.NestedSlice(obj.Object, "spec", "template", "spec", "containers")
+		if err != nil || !found {
+			return fmt.Errorf("containers not found in claw deployment: %w", err)
+		}
+
+		patched := false
+		for i, c := range containers {
+			container, ok := c.(map[string]any)
+			if !ok {
+				continue
+			}
+			if name, _, _ := unstructured.NestedString(container, "name"); name != ClawGatewayContainerName {
+				continue
+			}
+
+			resources, _, _ := unstructured.NestedMap(container, "resources")
+			if resources == nil {
+				resources = map[string]any{}
+			}
+			for section, list := range overrides {
+				if len(list) == 0 {
+					continue
+				}
+				existing, _, _ := unstructured.NestedMap(resources, section)
+				if existing == nil {
+					existing = map[string]any{}
+				}
+				for name, qty := range list {
+					existing[string(name)] = qty.String()
+				}
+				resources[section] = existing
+			}
+			if err := unstructured.SetNestedMap(container, resources, "resources"); err != nil {
+				return fmt.Errorf("failed to set gateway resources: %w", err)
+			}
+			containers[i] = container
+			patched = true
+			break
+		}
+		if !patched {
+			return fmt.Errorf("container %q not found in claw deployment", ClawGatewayContainerName)
+		}
+		if err := unstructured.SetNestedSlice(obj.Object, containers, "spec", "template", "spec", "containers"); err != nil {
+			return fmt.Errorf("failed to update containers: %w", err)
+		}
+	}
+	return nil
+}
+
 // merge.js) and whole-home PVC mount on both init-config and gateway containers.
 // This function is temporary — it will be removed when merge.js derives behavior
 // from file-level signals instead of a mode flag (design doc step 6).

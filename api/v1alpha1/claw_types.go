@@ -832,6 +832,15 @@ type ClawSpec struct {
 	// +optional
 	WebFetch *WebFetchSpec `json:"webFetch,omitempty"`
 
+	// Resources overrides the compute resources for the gateway container.
+	// Only the keys set here are applied; the rest keep their defaults
+	// (requests 1Gi/250m, limits 4Gi/2). Raise the memory limit when the
+	// agent runs context-heavy turns: memory-wiki synthesis over a large
+	// corpus can exceed the 4Gi default and is OOMKilled by the cgroup, which
+	// surfaces as a silent SIGKILL rather than an error.
+	// +optional
+	Resources *corev1.ResourceRequirements `json:"resources,omitempty"`
+
 	// RepoAccess configures repository access for agent runtime commands.
 	// +optional
 	RepoAccess *RepoAccessSpec `json:"repoAccess,omitempty"`
