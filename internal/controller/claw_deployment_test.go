@@ -3019,4 +3019,18 @@ func TestConfigureGatewayResources(t *testing.T) {
 		assert.Equal(t, "2Gi", res["requests"].(map[string]any)["memory"])
 		assert.Equal(t, "8Gi", res["limits"].(map[string]any)["memory"])
 	})
+
+	t.Run("override with no matching deployment errors", func(t *testing.T) {
+		instance := &clawv1alpha1.Claw{
+			ObjectMeta: metav1.ObjectMeta{Name: testInstanceName},
+			Spec: clawv1alpha1.ClawSpec{
+				Resources: &clawv1alpha1.GatewayResourcesSpec{
+					Limits: corev1.ResourceList{corev1.ResourceMemory: resource.MustParse("8Gi")},
+				},
+			},
+		}
+		err := configureGatewayResources([]*unstructured.Unstructured{}, instance)
+		require.Error(t, err, "a requested override that lands nowhere must not report success")
+		assert.Contains(t, err.Error(), "claw deployment not found")
+	})
 }

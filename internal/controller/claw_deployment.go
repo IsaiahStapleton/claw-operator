@@ -890,8 +890,6 @@ func configureReadOnlyMounts(obj *unstructured.Unstructured, readOnly []string) 
 	)
 }
 
-// configureUserManagedOpenClawFiles sets management-mode-specific configuration
-// for user-managed deployments: the CLAW_CONFIG_MANAGEMENT env var (read by
 // configureGatewayContainer applies the gateway-container tweaks that depend on
 // the Claw spec: the whole-home PVC mount and any spec.resources override.
 func configureGatewayContainer(objects []*unstructured.Unstructured, instance *clawv1alpha1.Claw) error {
@@ -967,13 +965,11 @@ func configureGatewayResources(objects []*unstructured.Unstructured, instance *c
 		if err := unstructured.SetNestedSlice(obj.Object, containers, "spec", "template", "spec", "containers"); err != nil {
 			return fmt.Errorf("failed to update containers: %w", err)
 		}
+		return nil
 	}
-	return nil
+	return fmt.Errorf("claw deployment not found in manifests")
 }
 
-// merge.js) and whole-home PVC mount on both init-config and gateway containers.
-// This function is temporary — it will be removed when merge.js derives behavior
-// from file-level signals instead of a mode flag (design doc step 6).
 // configureGatewayWholeHomeMount ensures the gateway and init-config containers
 // mount the PVC at /home/node (not /home/node/.openclaw) so that paths are
 // consistent with the init-plugins container, which always mounts at /home/node.
@@ -1044,6 +1040,11 @@ func configureGatewayWholeHomeMount(objects []*unstructured.Unstructured, instan
 	return fmt.Errorf("claw deployment not found in manifests")
 }
 
+// configureUserManagedOpenClawFiles sets management-mode-specific configuration
+// for user-managed deployments: the CLAW_CONFIG_MANAGEMENT env var (read by
+// merge.js) and whole-home PVC mount on both init-config and gateway containers.
+// This function is temporary — it will be removed when merge.js derives behavior
+// from file-level signals instead of a mode flag (design doc step 6).
 func configureUserManagedOpenClawFiles(objects []*unstructured.Unstructured, instance *clawv1alpha1.Claw) error {
 	if !userManagedConfig(instance) {
 		return nil
