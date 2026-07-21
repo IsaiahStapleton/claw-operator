@@ -2988,7 +2988,7 @@ func TestConfigureGatewayResources(t *testing.T) {
 		instance := &clawv1alpha1.Claw{
 			ObjectMeta: metav1.ObjectMeta{Name: testInstanceName},
 			Spec: clawv1alpha1.ClawSpec{
-				Resources: &corev1.ResourceRequirements{
+				Resources: &clawv1alpha1.GatewayResourcesSpec{
 					Limits: corev1.ResourceList{corev1.ResourceMemory: resource.MustParse("8Gi")},
 				},
 			},
@@ -3008,7 +3008,7 @@ func TestConfigureGatewayResources(t *testing.T) {
 		instance := &clawv1alpha1.Claw{
 			ObjectMeta: metav1.ObjectMeta{Name: testInstanceName},
 			Spec: clawv1alpha1.ClawSpec{
-				Resources: &corev1.ResourceRequirements{
+				Resources: &clawv1alpha1.GatewayResourcesSpec{
 					Requests: corev1.ResourceList{corev1.ResourceMemory: resource.MustParse("2Gi")},
 					Limits:   corev1.ResourceList{corev1.ResourceMemory: resource.MustParse("8Gi")},
 				},
