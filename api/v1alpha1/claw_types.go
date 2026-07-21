@@ -832,6 +832,15 @@ type ClawSpec struct {
 	// +optional
 	WebFetch *WebFetchSpec `json:"webFetch,omitempty"`
 
+	// Resources overrides the compute resources for the gateway container.
+	// Only the keys set here are applied; the rest keep their defaults
+	// (requests 1Gi/250m, limits 4Gi/2). Raise the memory limit when the
+	// agent runs context-heavy turns: memory-wiki synthesis over a large
+	// corpus can exceed the 4Gi default and is OOMKilled by the cgroup, which
+	// surfaces as a silent SIGKILL rather than an error.
+	// +optional
+	Resources *GatewayResourcesSpec `json:"resources,omitempty"`
+
 	// RepoAccess configures repository access for agent runtime commands.
 	// +optional
 	RepoAccess *RepoAccessSpec `json:"repoAccess,omitempty"`
@@ -903,6 +912,23 @@ type ClawSpec struct {
 	// When omitted, the default ServiceAccount is used with no token mounted.
 	// +optional
 	ServiceAccountName string `json:"serviceAccountName,omitempty"`
+}
+
+// GatewayResourcesSpec overrides the compute resources of the gateway
+// container. It deliberately exposes only requests and limits rather than
+// embedding corev1.ResourceRequirements, whose claims field (dynamic resource
+// allocation) the operator does not implement — surfacing it in the CRD would
+// let users set a field that is silently ignored.
+type GatewayResourcesSpec struct {
+	// Requests is the minimum compute resources required by the gateway
+	// container. Keys set here override the manifest defaults individually.
+	// +optional
+	Requests corev1.ResourceList `json:"requests,omitempty"`
+
+	// Limits is the maximum compute resources allowed for the gateway
+	// container. Keys set here override the manifest defaults individually.
+	// +optional
+	Limits corev1.ResourceList `json:"limits,omitempty"`
 }
 
 // ClawStatus defines the observed state of Claw
