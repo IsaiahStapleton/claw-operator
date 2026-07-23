@@ -126,19 +126,28 @@ func NewServer(cfg *Config, caCertPEM, caKeyPEM []byte, logger *slog.Logger) (*S
 				)
 			}
 
+			workloadAuth := workloadAuthorization(route, req.Header.Get("Authorization"))
 			StripAuthHeaders(req)
 
 			// GCP token vending: Google's SDK tries to fetch its own OAuth2 token
-			// from oauth2.googleapis.com/token before each API call. We intercept
-			// this and return a dummy token because the GCP injector already handles
-			// real token acquisition and injection on the actual API request. This
-			// must happen here (not in the injector) because we need to short-circuit
-			// the entire request and return a synthetic response.
-			if route.Injector == injectorGCP && isTokenVendingRequest(req) {
+			// from oauth2.googleapis.com/token before each API call. When the
+			// request carries the operator's placeholder ADC credentials we
+			// intercept it and return a dummy token because the GCP injector
+			// already handles real token acquisition and injection on the actual
+			// API request. Token requests with any other credentials belong to the
+			// workload (e.g. a plugin's own Google OAuth) and are forwarded to
+			// Google untouched. This must happen here (not in the injector)
+			// because we need to short-circuit the entire request and return a
+			// synthetic response.
+			if route.Injector == injectorGCP && isTokenVendingRequest(req) && isStubTokenRequest(req) {
 				return req, goproxy.NewResponse(
 					req, "application/json", http.StatusOK,
 					string(TokenVendingResponse()),
 				)
+			}
+
+			if workloadAuth != "" {
+				req.Header.Set("Authorization", workloadAuth)
 			}
 
 			if err := route.injector.Inject(req); err != nil {
@@ -221,13 +230,18 @@ func (s *Server) serveGateway(w http.ResponseWriter, r *http.Request, route *Rou
 		return
 	}
 
+	workloadAuth := workloadAuthorization(route, r.Header.Get("Authorization"))
 	StripAuthHeaders(r)
 
-	if route.Injector == injectorGCP && isTokenVendingRequest(r) {
+	if route.Injector == injectorGCP && isTokenVendingRequest(r) && isStubTokenRequest(r) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write(TokenVendingResponse())
 		return
+	}
+
+	if workloadAuth != "" {
+		r.Header.Set("Authorization", workloadAuth)
 	}
 
 	if err := route.injector.Inject(r); err != nil {

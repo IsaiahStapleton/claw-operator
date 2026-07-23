@@ -17,11 +17,14 @@ limitations under the License.
 package proxy
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
 	"sync"
@@ -85,6 +88,19 @@ func (g *GCPInjector) Inject(req *http.Request) error {
 		return nil // handled separately in the server's token vending path
 	}
 
+	// A workload-owned Authorization (restored by the server after header
+	// stripping) takes precedence: the caller brought its own Google
+	// credential, so the service-account token must not overwrite it.
+	if req.Header.Get("Authorization") != "" {
+		for k, v := range g.defaultHeaders {
+			if strings.EqualFold(k, "Authorization") {
+				continue
+			}
+			req.Header.Set(k, v)
+		}
+		return nil
+	}
+
 	creds, err := g.getTokenSource(req.Context())
 	if err != nil {
 		return fmt.Errorf("get GCP token source: %w", err)
@@ -103,6 +119,65 @@ func (g *GCPInjector) Inject(req *http.Request) error {
 	}
 	req.Header.Set("Authorization", "Bearer "+token.AccessToken)
 	return nil
+}
+
+const (
+	// VendedAccessToken is the dummy access token returned to Google SDK
+	// clients holding the operator's placeholder ADC credentials.
+	VendedAccessToken = "claw-proxy-vended-token"
+	// StubClientID and StubRefreshToken are the placeholder ADC credential
+	// values the operator writes into the workload's adc.json. Token-endpoint
+	// requests carrying them are answered with VendedAccessToken; all other
+	// token requests belong to the workload and are forwarded to Google.
+	StubClientID     = "stub.apps.googleusercontent.com"
+	StubRefreshToken = "proxy-managed-token"
+)
+
+// isStubTokenRequest reports whether a token-endpoint request carries the
+// operator's placeholder ADC credentials. The request body is restored so a
+// non-stub request can still be forwarded upstream intact. Google auth
+// libraries send the exchange form-encoded; JSON is accepted as a fallback.
+func isStubTokenRequest(req *http.Request) bool {
+	if req.Body == nil {
+		return false
+	}
+	body, err := io.ReadAll(req.Body)
+	_ = req.Body.Close()
+	req.Body = io.NopCloser(bytes.NewReader(body))
+	if err != nil || len(body) == 0 {
+		return false
+	}
+
+	if vals, err := url.ParseQuery(string(body)); err == nil {
+		if vals.Get("refresh_token") == StubRefreshToken || vals.Get("client_id") == StubClientID {
+			return true
+		}
+	}
+
+	var creds struct {
+		ClientID     string `json:"client_id"`
+		RefreshToken string `json:"refresh_token"`
+	}
+	if json.Unmarshal(body, &creds) == nil {
+		return creds.RefreshToken == StubRefreshToken || creds.ClientID == StubClientID
+	}
+	return false
+}
+
+// workloadAuthorization returns the Authorization value to restore after
+// StripAuthHeaders when the workload owns the credential. Only GCP routes
+// support workload-owned credentials: SDKs holding the placeholder ADC send
+// the vended dummy (replaced with a service-account token at injection),
+// while anything else is a credential the workload obtained itself (e.g. a
+// user OAuth token from a plugin's own consent flow) and must pass through.
+func workloadAuthorization(route *Route, auth string) string {
+	if route.Injector != injectorGCP {
+		return ""
+	}
+	if auth == "" || auth == "Bearer "+VendedAccessToken {
+		return ""
+	}
+	return auth
 }
 
 // isTokenVendingRequest checks if this is a POST to oauth2.googleapis.com/token.
@@ -149,7 +224,7 @@ func detectCredentialType(jsonData []byte) (google.CredentialsType, error) {
 // TokenVendingResponse returns a dummy access token for Google SDK client satisfaction.
 func TokenVendingResponse() []byte {
 	resp := map[string]any{
-		"access_token": "claw-proxy-vended-token",
+		"access_token": VendedAccessToken,
 		"token_type":   "Bearer",
 		"expires_in":   3600,
 	}

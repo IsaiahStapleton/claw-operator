@@ -33,6 +33,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	clawv1alpha1 "github.com/codeready-toolchain/claw-operator/api/v1alpha1"
+	"github.com/codeready-toolchain/claw-operator/internal/proxy"
 )
 
 const gitCredentialsVolumeName = "git-credentials"
@@ -198,7 +199,9 @@ func (r *ClawResourceReconciler) applyVertexADCConfigMap(ctx context.Context, in
 	cm.SetGroupVersionKind(corev1.SchemeGroupVersion.WithKind("ConfigMap"))
 	setInstanceLabel(cm, instance.Name)
 	cm.Data = map[string]string{
-		"adc.json": `{"type":"authorized_user","client_id":"stub.apps.googleusercontent.com","client_secret":"stub","refresh_token":"proxy-managed-token"}`,
+		"adc.json": fmt.Sprintf(
+			`{"type":"authorized_user","client_id":%q,"client_secret":"stub","refresh_token":%q}`,
+			proxy.StubClientID, proxy.StubRefreshToken),
 	}
 
 	if err := controllerutil.SetControllerReference(instance, cm, r.Scheme); err != nil {

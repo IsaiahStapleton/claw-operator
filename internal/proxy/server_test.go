@@ -18,6 +18,7 @@ package proxy
 
 import (
 	"bufio"
+	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -33,6 +34,8 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -759,4 +762,132 @@ func TestIsTokenVendingRequest(t *testing.T) {
 			assert.Equal(t, tt.want, isTokenVendingRequest(req))
 		})
 	}
+}
+
+// mitmRoundTrip performs the CONNECT + TLS + request dance against the test
+// proxy for a named target host, returning the response. The dial target the
+// proxy actually reaches is controlled by the caller via srv.proxy.Tr.
+func mitmRoundTrip(t *testing.T, ts *httptest.Server, certPEM []byte, targetHost string, req *http.Request) *http.Response {
+	t.Helper()
+
+	conn, err := net.Dial("tcp", ts.Listener.Addr().String())
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = conn.Close() })
+
+	target := targetHost + ":443"
+	_, err = fmt.Fprintf(conn, "CONNECT %s HTTP/1.1\r\nHost: %s\r\n\r\n", target, target)
+	require.NoError(t, err)
+
+	br := bufio.NewReader(conn)
+	resp, err := http.ReadResponse(br, nil)
+	require.NoError(t, err)
+	_ = resp.Body.Close()
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+
+	certBlock, _ := pem.Decode(certPEM)
+	require.NotNil(t, certBlock)
+	caCert, err := x509.ParseCertificate(certBlock.Bytes)
+	require.NoError(t, err)
+	caPool := x509.NewCertPool()
+	caPool.AddCert(caCert)
+
+	tlsConn := tls.Client(conn, &tls.Config{
+		RootCAs:    caPool,
+		ServerName: targetHost,
+		MinVersion: tls.VersionTLS12,
+	})
+	require.NoError(t, tlsConn.Handshake())
+
+	require.NoError(t, req.Write(tlsConn))
+	resp, err = http.ReadResponse(bufio.NewReader(tlsConn), req)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = resp.Body.Close() })
+	return resp
+}
+
+// newGCPProxyServer builds a test proxy with a single ".googleapis.com" gcp
+// route whose SA key path is intentionally invalid, plus an upstream that
+// echoes the request body and Authorization header. All upstream dials are
+// redirected to the echo server.
+func newGCPProxyServer(t *testing.T) (*httptest.Server, []byte, *atomic.Int32) {
+	t.Helper()
+	certPEM, keyPEM := generateTestCA(t)
+
+	var upstreamHits atomic.Int32
+	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upstreamHits.Add(1)
+		body, _ := io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprintf(w, `{"upstreamSawAuth":"%s","upstreamSawBody":"%s"}`,
+			r.Header.Get("Authorization"), string(body))
+	}))
+	t.Cleanup(upstream.Close)
+
+	cfg := &Config{
+		Routes: []Route{
+			{Domain: ".googleapis.com", Injector: "gcp", SAFilePath: "/nonexistent/sa-key.json"},
+		},
+	}
+	srv, err := NewServer(cfg, certPEM, keyPEM, slog.Default())
+	require.NoError(t, err)
+
+	srv.proxy.Tr.TLSClientConfig.InsecureSkipVerify = true //nolint:gosec // test only
+	upstreamAddr := upstream.Listener.Addr().String()
+	srv.proxy.Tr.DialContext = func(ctx context.Context, network, _ string) (net.Conn, error) {
+		return (&net.Dialer{}).DialContext(ctx, network, upstreamAddr)
+	}
+
+	ts := httptest.NewServer(srv.Handler())
+	t.Cleanup(ts.Close)
+	return ts, certPEM, &upstreamHits
+}
+
+func TestServerGCPTokenVendingOnlyForStubCredentials(t *testing.T) {
+	ts, certPEM, upstreamHits := newGCPProxyServer(t)
+
+	t.Run("stub ADC refresh is vended a dummy token", func(t *testing.T) {
+		body := "client_id=stub.apps.googleusercontent.com&client_secret=stub&grant_type=refresh_token&refresh_token=proxy-managed-token"
+		req, err := http.NewRequest(http.MethodPost, "https://oauth2.googleapis.com/token", strings.NewReader(body))
+		require.NoError(t, err)
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+
+		resp := mitmRoundTrip(t, ts, certPEM, "oauth2.googleapis.com", req)
+		respBody, _ := io.ReadAll(resp.Body)
+
+		assert.Equal(t, http.StatusOK, resp.StatusCode)
+		assert.Contains(t, string(respBody), VendedAccessToken)
+		assert.Equal(t, int32(0), upstreamHits.Load(), "stub token request must not reach upstream")
+	})
+
+	t.Run("workload-owned token exchange is forwarded upstream", func(t *testing.T) {
+		body := "client_id=1234.apps.googleusercontent.com&client_secret=real&grant_type=refresh_token&refresh_token=1//04-real-user-refresh-token"
+		req, err := http.NewRequest(http.MethodPost, "https://oauth2.googleapis.com/token", strings.NewReader(body))
+		require.NoError(t, err)
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+
+		resp := mitmRoundTrip(t, ts, certPEM, "oauth2.googleapis.com", req)
+		respBody, _ := io.ReadAll(resp.Body)
+
+		assert.Equal(t, http.StatusOK, resp.StatusCode)
+		assert.Equal(t, int32(1), upstreamHits.Load(), "real token exchange must be forwarded")
+		assert.Contains(t, string(respBody), "refresh_token=1//04-real-user-refresh-token",
+			"upstream must receive the original exchange body")
+		assert.NotContains(t, string(respBody), VendedAccessToken)
+	})
+}
+
+func TestServerGCPWorkloadBearerPassthrough(t *testing.T) {
+	ts, certPEM, upstreamHits := newGCPProxyServer(t)
+
+	req, err := http.NewRequest(http.MethodGet, "https://www.googleapis.com/calendar/v3/calendars/primary/events", nil)
+	require.NoError(t, err)
+	req.Header.Set("Authorization", "Bearer ya29.workload-owned-token")
+
+	resp := mitmRoundTrip(t, ts, certPEM, "www.googleapis.com", req)
+	respBody, _ := io.ReadAll(resp.Body)
+
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+	assert.Equal(t, int32(1), upstreamHits.Load())
+	assert.Contains(t, string(respBody), `"upstreamSawAuth":"Bearer ya29.workload-owned-token"`,
+		"workload-owned bearer must pass through instead of SA injection")
 }
