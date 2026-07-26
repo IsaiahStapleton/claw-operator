@@ -42,6 +42,33 @@ func providersFromConfig(t *testing.T, config map[string]any) map[string]any {
 	return providers
 }
 
+func TestLegacyOperatorJSON(t *testing.T) {
+	current := map[string]any{
+		"gateway": map[string]any{"controlUi": map[string]any{}},
+		"agents": map[string]any{"defaults": map[string]any{
+			"modelPolicy": map[string]any{"allow": []any{"openai/gpt-5"}},
+		}},
+		"memory": map[string]any{"search": map[string]any{"provider": "openai"}},
+		"models": map[string]any{"providers": map[string]any{
+			"openai": map[string]any{"baseUrl": "https://api.openai.com/v1"},
+		}},
+	}
+
+	raw, err := legacyOperatorJSON(current, &clawv1alpha1.Claw{})
+	require.NoError(t, err)
+
+	var legacy map[string]any
+	require.NoError(t, json.Unmarshal([]byte(raw), &legacy))
+	defaults := legacy["agents"].(map[string]any)["defaults"].(map[string]any)
+	assert.NotContains(t, defaults, "modelPolicy")
+	assert.Equal(t, "openai", defaults["memorySearch"].(map[string]any)["provider"])
+	assert.NotContains(t, legacy, "memory")
+	controlUI := legacy["gateway"].(map[string]any)["controlUi"].(map[string]any)
+	assert.Equal(t, true, controlUI["dangerouslyDisableDeviceAuth"])
+	providers := providersFromConfig(t, legacy)
+	assert.Equal(t, "openai-chatgpt-responses", providers["openai-codex"].(map[string]any)["api"])
+}
+
 // --- Provider injection Vertex SDK tests ---
 
 func TestInjectProvidersVertexSDK(t *testing.T) {
@@ -285,7 +312,7 @@ func TestInjectProviders(t *testing.T) {
 		assert.Contains(t, err.Error(), "google")
 	})
 
-	t.Run("should inject companion providers for openai", func(t *testing.T) {
+	t.Run("should inject only the canonical openai provider", func(t *testing.T) {
 		config := map[string]any{"models": map[string]any{"providers": map[string]any{}}}
 		credentials := []clawv1alpha1.CredentialSpec{
 			{
@@ -300,14 +327,10 @@ func TestInjectProviders(t *testing.T) {
 
 		providers := providersFromConfig(t, config)
 		require.Contains(t, providers, "openai")
-		require.Contains(t, providers, "openai-codex", "companion provider should be injected")
-		codex := providers["openai-codex"].(map[string]any)
 		openai := providers["openai"].(map[string]any)
 		assert.Equal(t, "https://api.openai.com/v1", openai["baseUrl"])
-		assert.Equal(t, openai["baseUrl"], codex["baseUrl"])
-		assert.Equal(t, "openai-chatgpt-responses", codex["api"])
+		assert.NotContains(t, providers, "openai-codex")
 		assert.NotContains(t, openai, "api", "OpenAI-compatible providers use OpenClaw default wire format")
-		assert.Equal(t, "ah-ah-ah-you-didnt-say-the-magic-word", codex["apiKey"])
 	})
 
 	t.Run("should reject explicit credential that collides with companion provider", func(t *testing.T) {
@@ -320,7 +343,7 @@ func TestInjectProviders(t *testing.T) {
 		err := injectProviders(config, testClawWithCredentials(credentials))
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "duplicate provider")
-		assert.Contains(t, err.Error(), "openai-codex")
+		assert.Contains(t, err.Error(), "openai")
 	})
 
 	t.Run("should set api and baseUrl with /v1 for xai", func(t *testing.T) {
@@ -404,6 +427,29 @@ func TestInjectModelCatalog(t *testing.T) {
 		assert.Contains(t, models, "google/gemini-3.5-flash")
 		entry := models["google/gemini-3.5-flash"].(map[string]any)
 		assert.Equal(t, "Gemini 3.5 Flash", entry["alias"])
+
+		policy := config["agents"].(map[string]any)["defaults"].(map[string]any)["modelPolicy"].(map[string]any)
+		assert.Contains(t, policy["allow"], "google/gemini-3.5-flash")
+	})
+
+	t.Run("canonicalizes provider aliases in providers and model policy", func(t *testing.T) {
+		config := map[string]any{}
+		instance := testClawWithCredentials([]clawv1alpha1.CredentialSpec{
+			{Name: "codex", Type: clawv1alpha1.CredentialTypeAPIKey, Provider: "openai-codex", Domain: "api.openai.com"},
+		})
+
+		require.NoError(t, injectProviders(config, instance))
+		injectModelCatalog(config, instance)
+
+		providers := config["models"].(map[string]any)["providers"].(map[string]any)
+		assert.Contains(t, providers, "openai")
+		assert.NotContains(t, providers, "openai-codex")
+		defaults := config["agents"].(map[string]any)["defaults"].(map[string]any)
+		models := defaults["models"].(map[string]any)
+		assert.Contains(t, models, "openai/gpt-5.5")
+		assert.NotContains(t, models, "openai-codex/gpt-5.5")
+		policy := defaults["modelPolicy"].(map[string]any)
+		assert.Contains(t, policy["allow"], "openai/gpt-5.5")
 	})
 
 	t.Run("multiple providers emit models for each", func(t *testing.T) {
@@ -688,6 +734,25 @@ func TestInjectModelCatalog(t *testing.T) {
 		proEntry := models["google/gemini-3.1-pro-preview"].(map[string]any)
 		assert.Equal(t, "My Pro Override", proEntry["alias"])
 	})
+
+	t.Run("preserves an explicit user model policy", func(t *testing.T) {
+		config := map[string]any{
+			"agents": map[string]any{
+				"defaults": map[string]any{
+					"modelPolicy": map[string]any{"allow": []any{"google/gemini-3.5-flash"}},
+				},
+			},
+		}
+		credentials := []clawv1alpha1.CredentialSpec{
+			{Name: "gemini", Type: clawv1alpha1.CredentialTypeAPIKey, Provider: "google", Domain: "generativelanguage.googleapis.com"},
+		}
+
+		injectModelCatalog(config, testClawWithCredentials(credentials))
+
+		policy := config["agents"].(map[string]any)["defaults"].(map[string]any)["modelPolicy"].(map[string]any)
+		assert.Equal(t, []any{"google/gemini-3.5-flash"}, policy["allow"])
+	})
+
 }
 
 // --- Custom provider injection tests ---
@@ -1066,8 +1131,10 @@ func TestOpenClawDynamicProviders(t *testing.T) {
 			}, cm) == nil
 		}, "ConfigMap should be created")
 
+		operatorJSON72, ok := cm.Data[operatorJSON72Key]
+		require.True(t, ok, "operator-7.2.json should exist")
 		var config map[string]any
-		require.NoError(t, json.Unmarshal([]byte(cm.Data["operator.json"]), &config))
+		require.NoError(t, json.Unmarshal([]byte(operatorJSON72), &config))
 
 		models := config["models"].(map[string]any)
 		providers := models["providers"].(map[string]any)
@@ -1159,7 +1226,7 @@ func TestOpenClawDynamicProviders(t *testing.T) {
 		assert.Equal(t, "my-vllm/qwen3-14b", model["primary"])
 	})
 
-	t.Run("should inject model catalog into operator.json after reconciliation", func(t *testing.T) {
+	t.Run("should inject model catalog into operator-7.2.json after reconciliation", func(t *testing.T) {
 		t.Cleanup(func() { deleteAndWaitAllResources(t, namespace) })
 		createClawInstance(t, ctx, testInstanceName, namespace)
 		reconciler := createClawReconciler()
@@ -1173,16 +1240,21 @@ func TestOpenClawDynamicProviders(t *testing.T) {
 			}, cm) == nil
 		}, "ConfigMap should be created")
 
+		operatorJSON72, ok := cm.Data[operatorJSON72Key]
+		require.True(t, ok, "operator-7.2.json should exist")
 		var config map[string]any
-		require.NoError(t, json.Unmarshal([]byte(cm.Data["operator.json"]), &config))
+		require.NoError(t, json.Unmarshal([]byte(operatorJSON72), &config))
 
 		agents, ok := config["agents"].(map[string]any)
-		require.True(t, ok, "operator.json should contain agents section")
+		require.True(t, ok, "operator-7.2.json should contain agents section")
 		defaults := agents["defaults"].(map[string]any)
 
 		catalogModels, hasModels := defaults["models"].(map[string]any)
-		require.True(t, hasModels, "operator.json should contain agents.defaults.models")
+		require.True(t, hasModels, "operator-7.2.json should contain agents.defaults.models")
 		assert.Contains(t, catalogModels, "google/gemini-3.5-flash", "should have google model from catalog")
+		modelPolicy, hasModelPolicy := defaults["modelPolicy"].(map[string]any)
+		require.True(t, hasModelPolicy, "operator-7.2.json should contain agents.defaults.modelPolicy")
+		assert.Contains(t, modelPolicy["allow"], "google/gemini-3.5-flash")
 
 		model := defaults["model"].(map[string]any)
 		assert.Equal(t, "google/gemini-3.5-flash", model["primary"], "primary should be first google model")

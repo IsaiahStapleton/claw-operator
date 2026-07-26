@@ -64,8 +64,8 @@ func memoryStackEnabled(instance *clawv1alpha1.Claw) bool {
 // without overwriting keys the user set, so an override survives the merge.
 // Treating a single tuned key as "user owns the whole stack" silently disabled
 // every layer, which is the opposite of what the user asked for.
-// memorySearch is intentionally NOT checked here: injectMemorySearch always
-// sets memorySearch.provider or memorySearch.enabled, so checking it would
+// memory.search is intentionally NOT checked here: injectMemorySearch always
+// sets memory.search.provider or memory.search.enabled, so checking it would
 // cause the stack to skip on every normal operator-managed reconcile.
 func userHasMemoryStackConfig(config map[string]any) bool {
 	plugins, ok := config["plugins"].(map[string]any)
@@ -90,12 +90,12 @@ func setDefault(m map[string]any, key string, val any) {
 }
 
 // userConfiguredMemorySearch reports whether the user set
-// agents.defaults.memorySearch in spec.config.raw. When they have, the operator
-// backs off and their memorySearch config governs vector recall, so neither the
+// memory.search in spec.config.raw. When they have, the operator
+// backs off and their memory.search config governs vector recall, so neither the
 // stack injection nor the status condition should manage or claim it.
 func userConfiguredMemorySearch(instance *clawv1alpha1.Claw) bool {
 	rawCfg, _ := parseUserRawConfig(instance)
-	return userHasMemorySearchConfig(rawCfg)
+	return userHasMemorySearchConfig(rawCfg, true)
 }
 
 // userConfiguredMemoryStack reports whether the user set a context engine in
@@ -111,10 +111,10 @@ func userConfiguredMemoryStack(instance *clawv1alpha1.Claw) bool {
 }
 
 // injectMemoryStack writes the requested memory layers into operator.json.
-// Each layer seeds independently; the memorySearch repair applies once any
+// Each layer seeds independently; the memory.search repair applies once any
 // layer is on, because vector recall is layer-independent. Skipped entirely
 // when no layer is requested or the user owns memory config.
-// userOwnsMemorySearch reports whether the user set memorySearch in
+// userOwnsMemorySearch reports whether the user set memory.search in
 // spec.config.raw (computed once by the caller); when true the operator does
 // not enable vector recall, leaving that config to the user.
 func injectMemoryStack(config map[string]any, instance *clawv1alpha1.Claw, userOwnsMemorySearch bool) {
@@ -122,14 +122,14 @@ func injectMemoryStack(config map[string]any, instance *clawv1alpha1.Claw, userO
 		return
 	}
 
-	// injectMemorySearch already set memorySearch.provider for this credential,
+	// injectMemorySearch already set memory.search.provider for this credential,
 	// which leaves search enabled by default, so this looks redundant. It is not:
 	// an instance that reconciled without an embedding-capable credential had
-	// memorySearch.enabled: false written to its PVC config, and deep-merge never
+	// memory.search.enabled: false written to its PVC config, and deep-merge never
 	// removes it. Writing true here repairs that stale value when a credential is
 	// added later.
 	if _, ok := firstEmbeddingProvider(instance); ok && !userOwnsMemorySearch {
-		setNestedValue(config, true, "agents", "defaults", "memorySearch", "enabled")
+		setNestedValue(config, true, "memory", "search", "enabled")
 	}
 
 	entries := ensureNestedMap(ensureNestedMap(config, "plugins"), "entries")
@@ -230,13 +230,13 @@ func setMemoryStackCondition(instance *clawv1alpha1.Claw) {
 		return
 	}
 
-	// When the user owns memorySearch via spec.config.raw the operator does not
-	// manage vector recall, so the condition must not assert it is active; the
+	// When the user owns memory.search via spec.config.raw the operator does not
+	// manage vector recall, so the condition must not assert it is active — the
 	// effective state is whatever the user configured.
 	if userConfiguredMemorySearch(instance) {
 		setCondition(instance, clawv1alpha1.ConditionTypeMemoryStack, metav1.ConditionTrue,
 			clawv1alpha1.ConditionReasonMemoryStackEnabled,
-			"Memory layers enabled ("+layers+"); vector recall follows your spec.config.raw memorySearch setting")
+			"Memory layers enabled ("+layers+"); vector recall follows your spec.config.raw memory.search setting")
 		return
 	}
 

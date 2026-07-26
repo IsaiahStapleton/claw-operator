@@ -438,15 +438,24 @@ func configureClawDeploymentForKubernetes(objects []*unstructured.Unstructured, 
 	return fmt.Errorf("claw deployment not found in manifests")
 }
 
+func clawConfigModeAndManagement(instance *clawv1alpha1.Claw) (string, string) {
+	mode := string(clawv1alpha1.ConfigModeMerge)
+	if instance.Spec.Config != nil && instance.Spec.Config.MergeMode != "" {
+		mode = string(instance.Spec.Config.MergeMode)
+	}
+	management := string(clawv1alpha1.ConfigManagementOperator)
+	if userManagedConfig(instance) {
+		management = string(clawv1alpha1.ConfigManagementUser)
+	}
+	return mode, management
+}
+
 // configureClawDeploymentConfigMode sets the CLAW_CONFIG_MODE env var on the
 // init-config init container in the claw (gateway) deployment. This controls
 // whether the merge script deep-merges operator config into the existing user
 // config ("merge") or fully overwrites it ("overwrite").
 func configureClawDeploymentConfigMode(objects []*unstructured.Unstructured, instance *clawv1alpha1.Claw) error {
-	mode := string(clawv1alpha1.ConfigModeMerge)
-	if instance.Spec.Config != nil && instance.Spec.Config.MergeMode != "" {
-		mode = string(instance.Spec.Config.MergeMode)
-	}
+	mode, _ := clawConfigModeAndManagement(instance)
 
 	gatewayName := getClawDeploymentName(instance.Name)
 	for _, obj := range objects {

@@ -46,14 +46,20 @@ func extractConfigMapData(t *testing.T) map[string]string {
 }
 
 type mergeTestSetup struct {
-	operatorJSON string            // override operator.json (empty = use embedded default)
-	seedJSON     string            // override openclaw.json seed (empty = use embedded default)
-	pvcJSON      string            // existing PVC openclaw.json (empty = no existing file)
-	configMode   string            // CLAW_CONFIG_MODE env (empty = unset, defaults to "merge" in script)
-	extraEnv     map[string]string // additional init script environment variables
-	withK8sSkill string            // KUBERNETES.md content (empty = not present)
-	pvcFiles     map[string]string // pre-existing files on PVC (relative path -> content)
-	extraConfigs map[string]string // extra files in config dir (e.g., _ws_*, _skill_* keys)
+	operatorJSON      string            // override legacy operator.json (empty = use embedded default)
+	operatorJSON72    string            // override operator-7.2.json (empty = legacy operator.json)
+	openClawVersion   string            // gateway image version (empty = 2026.7.1)
+	missingPackage    bool              // make the OpenClaw package metadata read fail
+	doctorFixComplete bool              // whether the user-approved doctor Job completed
+	omitMigrationJSON bool              // omit migration.json to exercise startup validation
+	expectFailure     bool              // expect the init script to reject startup
+	seedJSON          string            // override openclaw.json seed (empty = use embedded default)
+	pvcJSON           string            // existing PVC openclaw.json (empty = no existing file)
+	configMode        string            // CLAW_CONFIG_MODE env (empty = unset, defaults to "merge" in script)
+	extraEnv          map[string]string // additional init script environment variables
+	withK8sSkill      string            // KUBERNETES.md content (empty = not present)
+	pvcFiles          map[string]string // pre-existing files on PVC (relative path -> content)
+	extraConfigs      map[string]string // extra files in config dir (e.g., _ws_*, _skill_* keys)
 }
 
 type mergeTestResult struct {
@@ -81,6 +87,17 @@ func runMergeJS(t *testing.T, setup mergeTestSetup) mergeTestResult {
 
 	mergeScript = strings.Replace(mergeScript, `const configDir = "/config"`, fmt.Sprintf(`const configDir = %q`, configDir), 1)
 	mergeScript = strings.Replace(mergeScript, `const pvcDir = "/home/node/.openclaw"`, fmt.Sprintf(`const pvcDir = %q`, pvcDir), 1)
+	version := setup.openClawVersion
+	if version == "" {
+		version = "2026.7.1"
+	}
+	const versionExpression = `require("/app/package.json").version`
+	require.Contains(t, mergeScript, versionExpression, "merge.js version anchor changed")
+	if setup.missingPackage {
+		mergeScript = strings.Replace(mergeScript, versionExpression, `require("/missing/openclaw-package.json").version`, 1)
+	} else {
+		mergeScript = strings.Replace(mergeScript, versionExpression, fmt.Sprintf("%q", version), 1)
+	}
 
 	scriptPath := filepath.Join(configDir, "merge.js")
 	require.NoError(t, os.WriteFile(scriptPath, []byte(mergeScript), 0o644))
@@ -90,6 +107,16 @@ func runMergeJS(t *testing.T, setup mergeTestSetup) mergeTestResult {
 		operatorJSON = cmData["operator.json"]
 	}
 	require.NoError(t, os.WriteFile(filepath.Join(configDir, "operator.json"), []byte(operatorJSON), 0o644))
+	operatorJSON72 := setup.operatorJSON72
+	if operatorJSON72 == "" {
+		operatorJSON72 = operatorJSON
+	}
+	require.NoError(t, os.WriteFile(filepath.Join(configDir, "operator-7.2.json"), []byte(operatorJSON72), 0o644))
+	if !setup.omitMigrationJSON {
+		migrationJSON, marshalErr := json.Marshal(map[string]bool{"doctorFixComplete": setup.doctorFixComplete})
+		require.NoError(t, marshalErr)
+		require.NoError(t, os.WriteFile(filepath.Join(configDir, "migration.json"), migrationJSON, 0o644))
+	}
 
 	seedJSON := setup.seedJSON
 	if seedJSON == "" {
@@ -139,6 +166,10 @@ func runMergeJS(t *testing.T, setup mergeTestSetup) mergeTestResult {
 	cmd.Stderr = &stderr
 
 	err := cmd.Run()
+	if setup.expectFailure {
+		require.Error(t, err, "merge.js should reject an incomplete migration")
+		return mergeTestResult{stdout: stdout.String(), stderr: stderr.String(), pvcDir: pvcDir}
+	}
 	require.NoError(t, err, "merge.js failed: stdout=%s stderr=%s", stdout.String(), stderr.String())
 
 	resultPath := filepath.Join(pvcDir, "openclaw.json")
@@ -177,6 +208,105 @@ func TestMergeJS(t *testing.T) {
 	if _, err := exec.LookPath("node"); err != nil {
 		t.Skip("node not found in PATH, skipping merge.js tests")
 	}
+
+	t.Run("selects generated config from the gateway image version", func(t *testing.T) {
+		for _, tc := range []struct {
+			name    string
+			version string
+			want    string
+		}{
+			{name: "legacy image", version: "2026.7.1", want: "legacy"},
+			{name: "pre-2026 calendar image", version: "2025.12.0", want: "legacy"},
+			{name: "7.2 beta image", version: "2026.7.2-beta.1", want: "current"},
+			{name: "future semantic image", version: "8.0.0", want: "current"},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				result := runMergeJS(t, mergeTestSetup{
+					openClawVersion:   tc.version,
+					operatorJSON:      `{"configGeneration":"legacy"}`,
+					operatorJSON72:    `{"configGeneration":"current"}`,
+					doctorFixComplete: tc.want == "current",
+				})
+				assert.Equal(t, tc.want, result.config["configGeneration"])
+			})
+		}
+	})
+
+	t.Run("falls back to legacy config when package metadata is unavailable", func(t *testing.T) {
+		result := runMergeJS(t, mergeTestSetup{
+			missingPackage: true,
+			operatorJSON:   `{"configGeneration":"legacy"}`,
+			operatorJSON72: `{"configGeneration":"current"}`,
+		})
+		assert.Equal(t, "legacy", result.config["configGeneration"])
+		assert.Contains(t, result.stderr, "could not read OpenClaw package metadata; using legacy config")
+	})
+
+	t.Run("rejects 7.2 startup until doctor migration completes", func(t *testing.T) {
+		result := runMergeJS(t, mergeTestSetup{
+			openClawVersion: "2026.7.2",
+			expectFailure:   true,
+		})
+		assert.Contains(t, result.stderr, "requires an approved spec.migration.doctorFix Job")
+	})
+
+	t.Run("rejects 7.2 startup when migration status is missing", func(t *testing.T) {
+		result := runMergeJS(t, mergeTestSetup{
+			openClawVersion:   "2026.7.2",
+			omitMigrationJSON: true,
+			expectFailure:     true,
+		})
+		assert.Contains(t, result.stderr, "migration.json is missing or invalid")
+	})
+
+	t.Run("permits 7.2 config merge inside the doctor migration Job", func(t *testing.T) {
+		result := runMergeJS(t, mergeTestSetup{
+			openClawVersion: "2026.7.2",
+			extraEnv:        map[string]string{"OPENCLAW_DOCTOR_MIGRATION": "1"},
+		})
+		assert.NotEmpty(t, result.config)
+	})
+
+	t.Run("permits doctor migration when migration status is missing", func(t *testing.T) {
+		result := runMergeJS(t, mergeTestSetup{
+			openClawVersion:   "2026.7.2",
+			omitMigrationJSON: true,
+			extraEnv:          map[string]string{"OPENCLAW_DOCTOR_MIGRATION": "1"},
+		})
+		assert.NotEmpty(t, result.config)
+	})
+
+	t.Run("normalizes the legacy agent list for 7.2", func(t *testing.T) {
+		result := runMergeJS(t, mergeTestSetup{
+			openClawVersion:   "2026.7.2",
+			doctorFixComplete: true,
+		})
+		_, hasList := nestedValue(result.config, "agents.list")
+		assert.False(t, hasList)
+		entries, hasEntries := nestedValue(result.config, "agents.entries")
+		require.True(t, hasEntries)
+		assert.NotEmpty(t, entries)
+	})
+
+	t.Run("normalizes multiple default agents to the first default", func(t *testing.T) {
+		result := runMergeJS(t, mergeTestSetup{
+			openClawVersion:   "2026.7.2",
+			doctorFixComplete: true,
+			seedJSON: `{
+				"agents": {
+					"list": [
+						{"id":"first","default":true},
+						{"id":"second","default":true}
+					]
+				}
+			}`,
+		})
+		entriesValue, ok := nestedValue(result.config, "agents.entries")
+		require.True(t, ok)
+		entries := entriesValue.(map[string]any)
+		assert.Equal(t, true, entries["first"].(map[string]any)["default"])
+		assert.NotContains(t, entries["second"].(map[string]any), "default")
+	})
 
 	t.Run("first run merge mode", func(t *testing.T) {
 		result := runMergeJS(t, mergeTestSetup{})
@@ -277,6 +407,7 @@ func TestMergeJS(t *testing.T) {
 			"agents": {
 				"defaults": {
 					"model": { "primary": "google/gemini-3.5-flash" },
+					"modelPolicy": { "allow": ["google/gemini-3.5-flash", "anthropic/claude-sonnet-4-6", "openai/gpt-5.5"] },
 					"models": {
 						"google/gemini-3.5-flash": { "alias": "Gemini Flash" },
 						"anthropic/claude-sonnet-4-6": { "alias": "Claude Sonnet 4.6" },
@@ -340,6 +471,9 @@ func TestMergeJS(t *testing.T) {
 		primary, hasPrimary := nestedValue(result.config, "agents.defaults.model.primary")
 		require.True(t, hasPrimary, "runtime model selection should be preserved")
 		assert.Equal(t, "custom/runtime-model", primary)
+		allow, hasAllow := nestedValue(result.config, "agents.defaults.modelPolicy.allow")
+		require.True(t, hasAllow, "generated model policy should be merged into the runtime config")
+		assert.Equal(t, []any{"google/gemini-3.5-flash", "anthropic/claude-sonnet-4-6", "openai/gpt-5.5"}, allow)
 		stateBytes, err := os.ReadFile(filepath.Join(result.pvcDir, ".operator", "managed-runtime-config.json"))
 		require.NoError(t, err)
 		var state map[string]any
@@ -347,6 +481,7 @@ func TestMergeJS(t *testing.T) {
 		entries := state["entries"].(map[string]any)
 		assert.ElementsMatch(t, []any{"anthropic", "openai"}, entries["models.providers"],
 			"only operator-added providers should be owned when existing runtime keys collide")
+		assert.Equal(t, []any{"allow"}, entries["agents.defaults.modelPolicy"])
 		assert.Contains(t, result.stdout, "refreshed operator-provided runtime additions")
 	})
 

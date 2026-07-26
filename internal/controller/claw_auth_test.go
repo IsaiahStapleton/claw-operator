@@ -34,48 +34,19 @@ import (
 	clawv1alpha1 "github.com/codeready-toolchain/claw-operator/api/v1alpha1"
 )
 
-// --- shouldDisableDevicePairing unit tests ---
+func assertNoRetiredDeviceAuth(t *testing.T, gateway map[string]any) {
+	t.Helper()
+	controlUI, ok := gateway["controlUi"].(map[string]any)
+	if ok {
+		assert.NotContains(t, controlUI, "dangerouslyDisableDeviceAuth")
+	}
+}
 
-func TestShouldDisableDevicePairing(t *testing.T) {
-	boolPtr := func(v bool) *bool { return &v }
-
-	t.Run("should return true when auth is nil (disabled by default)", func(t *testing.T) {
-		assert.True(t, shouldDisableDevicePairing(nil))
-	})
-
-	t.Run("should return true for token mode with nil override (disabled by default)", func(t *testing.T) {
-		auth := &clawv1alpha1.AuthSpec{Mode: clawv1alpha1.AuthModeToken}
-		assert.True(t, shouldDisableDevicePairing(auth))
-	})
-
-	t.Run("should return true for password mode with nil override", func(t *testing.T) {
-		auth := &clawv1alpha1.AuthSpec{Mode: clawv1alpha1.AuthModePassword}
-		assert.True(t, shouldDisableDevicePairing(auth))
-	})
-
-	t.Run("should respect explicit true override in token mode", func(t *testing.T) {
-		auth := &clawv1alpha1.AuthSpec{
-			Mode:                 clawv1alpha1.AuthModeToken,
-			DisableDevicePairing: boolPtr(true),
-		}
-		assert.True(t, shouldDisableDevicePairing(auth))
-	})
-
-	t.Run("should respect explicit false override in password mode", func(t *testing.T) {
-		auth := &clawv1alpha1.AuthSpec{
-			Mode:                 clawv1alpha1.AuthModePassword,
-			DisableDevicePairing: boolPtr(false),
-		}
-		assert.False(t, shouldDisableDevicePairing(auth))
-	})
-
-	t.Run("should respect explicit true override in password mode", func(t *testing.T) {
-		auth := &clawv1alpha1.AuthSpec{
-			Mode:                 clawv1alpha1.AuthModePassword,
-			DisableDevicePairing: boolPtr(true),
-		}
-		assert.True(t, shouldDisableDevicePairing(auth))
-	})
+func currentConfigTestMetadata() metav1.ObjectMeta {
+	return metav1.ObjectMeta{
+		Name:      testInstanceName,
+		Namespace: namespace,
+	}
 }
 
 // --- injectAuthMode unit tests ---
@@ -90,10 +61,27 @@ func TestInjectAuthMode(t *testing.T) {
 		}
 	}
 
-	t.Run("should set token mode and dangerouslyDisableDeviceAuth=true when auth is nil (disabled by default)", func(t *testing.T) {
+	t.Run("legacy config retains its device-pairing setting", func(t *testing.T) {
 		config := baseConfig()
+		disablePairing := false
 		instance := &clawv1alpha1.Claw{
 			ObjectMeta: metav1.ObjectMeta{Name: testInstanceName, Namespace: namespace},
+			Spec: clawv1alpha1.ClawSpec{Auth: &clawv1alpha1.AuthSpec{
+				DisableDevicePairing: &disablePairing,
+			}},
+		}
+
+		injectAuthModeForGeneration(config, instance, legacyConfigGeneration)
+
+		gateway := config["gateway"].(map[string]any)
+		controlUI := gateway["controlUi"].(map[string]any)
+		assert.Equal(t, false, controlUI["dangerouslyDisableDeviceAuth"])
+	})
+
+	t.Run("should set token mode without the retired device-auth bypass when auth is nil", func(t *testing.T) {
+		config := baseConfig()
+		instance := &clawv1alpha1.Claw{
+			ObjectMeta: currentConfigTestMetadata(),
 		}
 
 		injectAuthMode(config, instance)
@@ -101,14 +89,13 @@ func TestInjectAuthMode(t *testing.T) {
 		gateway := config["gateway"].(map[string]any)
 		auth := gateway["auth"].(map[string]any)
 		assert.Equal(t, "token", auth["mode"])
-		controlUI := gateway["controlUi"].(map[string]any)
-		assert.Equal(t, true, controlUI["dangerouslyDisableDeviceAuth"])
+		assertNoRetiredDeviceAuth(t, gateway)
 	})
 
-	t.Run("should set token mode and dangerouslyDisableDeviceAuth=true when auth.mode is token (disabled by default)", func(t *testing.T) {
+	t.Run("should set token mode without the retired device-auth bypass", func(t *testing.T) {
 		config := baseConfig()
 		instance := &clawv1alpha1.Claw{
-			ObjectMeta: metav1.ObjectMeta{Name: testInstanceName, Namespace: namespace},
+			ObjectMeta: currentConfigTestMetadata(),
 			Spec: clawv1alpha1.ClawSpec{
 				Auth: &clawv1alpha1.AuthSpec{Mode: clawv1alpha1.AuthModeToken},
 			},
@@ -119,14 +106,26 @@ func TestInjectAuthMode(t *testing.T) {
 		gateway := config["gateway"].(map[string]any)
 		auth := gateway["auth"].(map[string]any)
 		assert.Equal(t, "token", auth["mode"])
-		controlUI := gateway["controlUi"].(map[string]any)
-		assert.Equal(t, true, controlUI["dangerouslyDisableDeviceAuth"])
+		assertNoRetiredDeviceAuth(t, gateway)
+	})
+
+	t.Run("7.2 config removes an inherited device-auth bypass", func(t *testing.T) {
+		config := baseConfig()
+		config["gateway"].(map[string]any)["controlUi"] = map[string]any{
+			"dangerouslyDisableDeviceAuth": true,
+		}
+		instance := &clawv1alpha1.Claw{ObjectMeta: currentConfigTestMetadata()}
+
+		injectAuthModeForGeneration(config, instance, openClaw72ConfigGeneration)
+
+		gateway := config["gateway"].(map[string]any)
+		assertNoRetiredDeviceAuth(t, gateway)
 	})
 
 	t.Run("should inject password mode without password value", func(t *testing.T) {
 		config := baseConfig()
 		instance := &clawv1alpha1.Claw{
-			ObjectMeta: metav1.ObjectMeta{Name: testInstanceName, Namespace: namespace},
+			ObjectMeta: currentConfigTestMetadata(),
 			Spec: clawv1alpha1.ClawSpec{
 				Auth: &clawv1alpha1.AuthSpec{
 					Mode:              clawv1alpha1.AuthModePassword,
@@ -144,10 +143,10 @@ func TestInjectAuthMode(t *testing.T) {
 		assert.False(t, hasPassword, "password should not be in ConfigMap")
 	})
 
-	t.Run("should set dangerouslyDisableDeviceAuth when mode is password", func(t *testing.T) {
+	t.Run("should not emit the retired device-auth bypass when mode is password", func(t *testing.T) {
 		config := baseConfig()
 		instance := &clawv1alpha1.Claw{
-			ObjectMeta: metav1.ObjectMeta{Name: testInstanceName, Namespace: namespace},
+			ObjectMeta: currentConfigTestMetadata(),
 			Spec: clawv1alpha1.ClawSpec{
 				Auth: &clawv1alpha1.AuthSpec{
 					Mode:              clawv1alpha1.AuthModePassword,
@@ -159,8 +158,7 @@ func TestInjectAuthMode(t *testing.T) {
 		injectAuthMode(config, instance)
 
 		gateway := config["gateway"].(map[string]any)
-		controlUI := gateway["controlUi"].(map[string]any)
-		assert.Equal(t, true, controlUI["dangerouslyDisableDeviceAuth"])
+		assertNoRetiredDeviceAuth(t, gateway)
 	})
 
 	t.Run("should preserve existing gateway config sections", func(t *testing.T) {
@@ -172,7 +170,7 @@ func TestInjectAuthMode(t *testing.T) {
 			},
 		}
 		instance := &clawv1alpha1.Claw{
-			ObjectMeta: metav1.ObjectMeta{Name: testInstanceName, Namespace: namespace},
+			ObjectMeta: currentConfigTestMetadata(),
 			Spec: clawv1alpha1.ClawSpec{
 				Auth: &clawv1alpha1.AuthSpec{
 					Mode:              clawv1alpha1.AuthModePassword,
@@ -192,7 +190,7 @@ func TestInjectAuthMode(t *testing.T) {
 	t.Run("should create gateway section if absent", func(t *testing.T) {
 		config := map[string]any{"models": map[string]any{}}
 		instance := &clawv1alpha1.Claw{
-			ObjectMeta: metav1.ObjectMeta{Name: testInstanceName, Namespace: namespace},
+			ObjectMeta: currentConfigTestMetadata(),
 			Spec: clawv1alpha1.ClawSpec{
 				Auth: &clawv1alpha1.AuthSpec{
 					Mode:              clawv1alpha1.AuthModePassword,
@@ -216,7 +214,7 @@ func TestInjectAuthMode(t *testing.T) {
 			},
 		}
 		instance := &clawv1alpha1.Claw{
-			ObjectMeta: metav1.ObjectMeta{Name: testInstanceName, Namespace: namespace},
+			ObjectMeta: currentConfigTestMetadata(),
 			Spec: clawv1alpha1.ClawSpec{
 				Auth: &clawv1alpha1.AuthSpec{
 					Mode:              clawv1alpha1.AuthModePassword,
@@ -230,14 +228,14 @@ func TestInjectAuthMode(t *testing.T) {
 		gateway := config["gateway"].(map[string]any)
 		controlUI := gateway["controlUi"].(map[string]any)
 		assert.Equal(t, "dark", controlUI["theme"])
-		assert.Equal(t, true, controlUI["dangerouslyDisableDeviceAuth"])
+		assertNoRetiredDeviceAuth(t, gateway)
 	})
 
-	t.Run("should not set dangerouslyDisableDeviceAuth when password mode with disableDevicePairing=false", func(t *testing.T) {
+	t.Run("should not emit the retired device-auth bypass when disableDevicePairing=false", func(t *testing.T) {
 		config := baseConfig()
 		disablePairing := false
 		instance := &clawv1alpha1.Claw{
-			ObjectMeta: metav1.ObjectMeta{Name: testInstanceName, Namespace: namespace},
+			ObjectMeta: currentConfigTestMetadata(),
 			Spec: clawv1alpha1.ClawSpec{
 				Auth: &clawv1alpha1.AuthSpec{
 					Mode:                 clawv1alpha1.AuthModePassword,
@@ -252,15 +250,14 @@ func TestInjectAuthMode(t *testing.T) {
 		gateway := config["gateway"].(map[string]any)
 		auth := gateway["auth"].(map[string]any)
 		assert.Equal(t, "password", auth["mode"], "password auth mode should still be injected")
-		controlUI := gateway["controlUi"].(map[string]any)
-		assert.Equal(t, false, controlUI["dangerouslyDisableDeviceAuth"])
+		assertNoRetiredDeviceAuth(t, gateway)
 	})
 
-	t.Run("should set dangerouslyDisableDeviceAuth when token mode with disableDevicePairing=true", func(t *testing.T) {
+	t.Run("should not emit the retired device-auth bypass when disableDevicePairing=true", func(t *testing.T) {
 		config := baseConfig()
 		disablePairing := true
 		instance := &clawv1alpha1.Claw{
-			ObjectMeta: metav1.ObjectMeta{Name: testInstanceName, Namespace: namespace},
+			ObjectMeta: currentConfigTestMetadata(),
 			Spec: clawv1alpha1.ClawSpec{
 				Auth: &clawv1alpha1.AuthSpec{
 					Mode:                 clawv1alpha1.AuthModeToken,
@@ -274,16 +271,14 @@ func TestInjectAuthMode(t *testing.T) {
 		gateway := config["gateway"].(map[string]any)
 		auth := gateway["auth"].(map[string]any)
 		assert.Equal(t, "token", auth["mode"], "auth mode should remain token")
-		controlUI := gateway["controlUi"].(map[string]any)
-		assert.Equal(t, true, controlUI["dangerouslyDisableDeviceAuth"],
-			"dangerouslyDisableDeviceAuth should be set when explicitly requested")
+		assertNoRetiredDeviceAuth(t, gateway)
 	})
 
-	t.Run("should set dangerouslyDisableDeviceAuth when password mode with explicit disableDevicePairing=true", func(t *testing.T) {
+	t.Run("should not emit the retired device-auth bypass when password mode has disableDevicePairing=true", func(t *testing.T) {
 		config := baseConfig()
 		disablePairing := true
 		instance := &clawv1alpha1.Claw{
-			ObjectMeta: metav1.ObjectMeta{Name: testInstanceName, Namespace: namespace},
+			ObjectMeta: currentConfigTestMetadata(),
 			Spec: clawv1alpha1.ClawSpec{
 				Auth: &clawv1alpha1.AuthSpec{
 					Mode:                 clawv1alpha1.AuthModePassword,
@@ -298,8 +293,7 @@ func TestInjectAuthMode(t *testing.T) {
 		gateway := config["gateway"].(map[string]any)
 		auth := gateway["auth"].(map[string]any)
 		assert.Equal(t, "password", auth["mode"])
-		controlUI := gateway["controlUi"].(map[string]any)
-		assert.Equal(t, true, controlUI["dangerouslyDisableDeviceAuth"])
+		assertNoRetiredDeviceAuth(t, gateway)
 	})
 
 	t.Run("should override user-set auth mode", func(t *testing.T) {
@@ -309,7 +303,7 @@ func TestInjectAuthMode(t *testing.T) {
 			},
 		}
 		instance := &clawv1alpha1.Claw{
-			ObjectMeta: metav1.ObjectMeta{Name: testInstanceName, Namespace: namespace},
+			ObjectMeta: currentConfigTestMetadata(),
 		}
 
 		injectAuthMode(config, instance)
@@ -597,7 +591,7 @@ func TestPasswordAuthModeReconciliation(t *testing.T) {
 		}, "ConfigMap should be created")
 
 		var config map[string]any
-		require.NoError(t, json.Unmarshal([]byte(cm.Data["operator.json"]), &config))
+		require.NoError(t, json.Unmarshal([]byte(cm.Data[operatorJSON72Key]), &config))
 
 		gateway := config["gateway"].(map[string]any)
 		auth := gateway["auth"].(map[string]any)
@@ -605,8 +599,7 @@ func TestPasswordAuthModeReconciliation(t *testing.T) {
 		_, hasPassword := auth["password"]
 		assert.False(t, hasPassword, "password value must not be in ConfigMap")
 
-		controlUI := gateway["controlUi"].(map[string]any)
-		assert.Equal(t, true, controlUI["dangerouslyDisableDeviceAuth"])
+		assertNoRetiredDeviceAuth(t, gateway)
 	})
 
 	t.Run("should not inject password auth when mode is token (default)", func(t *testing.T) {
@@ -625,14 +618,12 @@ func TestPasswordAuthModeReconciliation(t *testing.T) {
 		}, "ConfigMap should be created")
 
 		var config map[string]any
-		require.NoError(t, json.Unmarshal([]byte(cm.Data["operator.json"]), &config))
+		require.NoError(t, json.Unmarshal([]byte(cm.Data[operatorJSON72Key]), &config))
 
 		gateway := config["gateway"].(map[string]any)
 		auth := gateway["auth"].(map[string]any)
 		assert.Equal(t, "token", auth["mode"], "auth mode should be token by default")
-		controlUI := gateway["controlUi"].(map[string]any)
-		assert.Equal(t, true, controlUI["dangerouslyDisableDeviceAuth"],
-			"device pairing should be disabled by default")
+		assertNoRetiredDeviceAuth(t, gateway)
 	})
 
 	t.Run("should fail reconciliation and set Ready condition when password Secret is missing", func(t *testing.T) {

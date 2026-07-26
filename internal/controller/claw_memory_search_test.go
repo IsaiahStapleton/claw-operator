@@ -22,18 +22,17 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	clawv1alpha1 "github.com/codeready-toolchain/claw-operator/api/v1alpha1"
 )
 
 func memorySearchFromConfig(t *testing.T, config map[string]any) map[string]any {
 	t.Helper()
-	agents, ok := config["agents"].(map[string]any)
-	require.True(t, ok, "config should contain 'agents' key")
-	defaults, ok := agents["defaults"].(map[string]any)
-	require.True(t, ok, "agents should contain 'defaults' key")
-	ms, ok := defaults["memorySearch"].(map[string]any)
-	require.True(t, ok, "defaults should contain 'memorySearch' key as map, got %T", defaults["memorySearch"])
+	memory, ok := config["memory"].(map[string]any)
+	require.True(t, ok, "config should contain 'memory' key")
+	ms, ok := memory["search"].(map[string]any)
+	require.True(t, ok, "memory should contain 'search' key as map, got %T", memory["search"])
 	return ms
 }
 
@@ -148,13 +147,11 @@ func TestInjectMemorySearch(t *testing.T) {
 }
 
 func TestInjectMemorySearchUserOverride(t *testing.T) {
-	t.Run("user memorySearch.provider skips injection", func(t *testing.T) {
+	t.Run("user memory.search.provider skips injection", func(t *testing.T) {
 		config := map[string]any{
-			"agents": map[string]any{
-				"defaults": map[string]any{
-					"memorySearch": map[string]any{
-						"provider": "custom",
-					},
+			"memory": map[string]any{
+				"search": map[string]any{
+					"provider": "custom",
 				},
 			},
 		}
@@ -169,13 +166,11 @@ func TestInjectMemorySearchUserOverride(t *testing.T) {
 		assert.NotContains(t, ms, "enabled")
 	})
 
-	t.Run("user memorySearch.enabled false is respected", func(t *testing.T) {
+	t.Run("user memory.search.enabled false is respected", func(t *testing.T) {
 		config := map[string]any{
-			"agents": map[string]any{
-				"defaults": map[string]any{
-					"memorySearch": map[string]any{
-						"enabled": false,
-					},
+			"memory": map[string]any{
+				"search": map[string]any{
+					"enabled": false,
 				},
 			},
 		}
@@ -189,6 +184,23 @@ func TestInjectMemorySearchUserOverride(t *testing.T) {
 		assert.Equal(t, false, ms["enabled"])
 		assert.NotContains(t, ms, "provider")
 	})
+}
+
+func TestInjectMemorySearchLegacyConfig(t *testing.T) {
+	instance := &clawv1alpha1.Claw{
+		ObjectMeta: metav1.ObjectMeta{Name: testInstanceName, Namespace: namespace},
+		Spec: clawv1alpha1.ClawSpec{Credentials: []clawv1alpha1.CredentialSpec{
+			{Name: "openai", Type: clawv1alpha1.CredentialTypeBearer, Provider: "openai"},
+		}},
+	}
+	config := map[string]any{}
+
+	injectMemorySearchForGeneration(config, instance, legacyConfigGeneration)
+
+	defaults := config["agents"].(map[string]any)["defaults"].(map[string]any)
+	legacySearch := defaults["memorySearch"].(map[string]any)
+	assert.Equal(t, "openai", legacySearch["provider"])
+	assert.NotContains(t, config, "memory")
 }
 
 func TestInjectMemorySearchJSONRoundTrip(t *testing.T) {
@@ -215,13 +227,11 @@ func TestInjectMemorySearchJSONRoundTrip(t *testing.T) {
 
 	t.Run("should produce valid JSON with deep-merge user config override", func(t *testing.T) {
 		userJSON := `{
-			"agents": {
-				"defaults": {
-					"memorySearch": {
+			"memory": {
+				"search": {
 						"provider": "openai-compatible",
 						"model": "custom-embedding",
 						"remote": {"baseUrl": "http://local/v1", "apiKey": "placeholder"}
-					}
 				}
 			}
 		}`
@@ -282,36 +292,28 @@ func TestUserHasMemorySearchConfig(t *testing.T) {
 			want:   false,
 		},
 		{
-			name:   "agents without defaults",
-			config: map[string]any{"agents": map[string]any{}},
+			name:   "memory without search",
+			config: map[string]any{"memory": map[string]any{}},
 			want:   false,
 		},
 		{
-			name: "defaults without memorySearch",
+			name: "memory without search config",
 			config: map[string]any{
-				"agents": map[string]any{"defaults": map[string]any{"model": map[string]any{}}},
+				"memory": map[string]any{"other": map[string]any{}},
 			},
 			want: false,
 		},
 		{
-			name: "memorySearch present as map",
+			name: "memory.search present as map",
 			config: map[string]any{
-				"agents": map[string]any{
-					"defaults": map[string]any{
-						"memorySearch": map[string]any{"provider": "openai"},
-					},
-				},
+				"memory": map[string]any{"search": map[string]any{"provider": "openai"}},
 			},
 			want: true,
 		},
 		{
-			name: "memorySearch present as bool",
+			name: "memory.search present as bool",
 			config: map[string]any{
-				"agents": map[string]any{
-					"defaults": map[string]any{
-						"memorySearch": false,
-					},
-				},
+				"memory": map[string]any{"search": false},
 			},
 			want: true,
 		},
@@ -319,7 +321,14 @@ func TestUserHasMemorySearchConfig(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			assert.Equal(t, tt.want, userHasMemorySearchConfig(tt.config))
+			assert.Equal(t, tt.want, userHasMemorySearchConfig(tt.config, true))
 		})
 	}
+
+	t.Run("legacy agents.defaults.memorySearch", func(t *testing.T) {
+		config := map[string]any{
+			"agents": map[string]any{"defaults": map[string]any{"memorySearch": map[string]any{"enabled": false}}},
+		}
+		assert.True(t, userHasMemorySearchConfig(config, false))
+	})
 }

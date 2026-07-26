@@ -17,7 +17,7 @@ This decision adds automatic memory search configuration to the operator's confi
 
 1. **Zero-config for users** — If a user has a credential that supports embeddings, memory search works automatically.
 2. **Proxy-first** — All credential-bearing traffic routes through the proxy. No API keys leak into the gateway container.
-3. **User-overridable** — Users who set `agents.defaults.memorySearch` in `spec.config.raw` own it completely; the operator skips injection.
+3. **User-overridable** — Users who set the active schema's memory-search key in `spec.config.raw` own it completely; the operator skips injection.
 4. **Fail gracefully** — If no embedding-capable provider is configured, memory search is explicitly disabled rather than erroring at runtime.
 
 ---
@@ -29,7 +29,7 @@ This decision adds automatic memory search configuration to the operator's confi
 ```
 Gateway container
   └── memory_search tool invoked
-       └── reads agents.defaults.memorySearch.provider (e.g. "openai" or "gemini")
+       └── reads `agents.defaults.memorySearch.provider` (legacy) or `memory.search.provider` (7.2)
        └── native adapter resolves API key from models.providers.<id>.apiKey (placeholder)
        └── adapter calls upstream URL (e.g. https://api.openai.com/v1/embeddings)
             └── Node.js fetch honors HTTPS_PROXY env var
@@ -47,9 +47,9 @@ The `injectProviders` function already writes `models.providers.<id> = { baseUrl
 | # | Question | Decision | Rationale |
 |---|----------|----------|-----------|
 | 1 | Which credential becomes the embedding provider? | First embedding-capable credential in `spec.credentials` order wins | Simple, deterministic, consistent with existing primary model selection pattern. Users who care can reorder credentials. |
-| 2 | What happens when the user already has `memorySearch` in their raw config? | Skip injection entirely — user owns it completely | Cleanest escape hatch. Matches the "don't fight the user" principle. |
+| 2 | What happens when the user already has the schema's memory-search key in raw config? | Skip injection entirely — user owns it completely | Cleanest escape hatch. Matches the "don't fight the user" principle. |
 | 3 | Which OpenClaw embedding adapter ID to use? | Provider-native adapter IDs (`openai`, `gemini`) | OpenClaw handles model defaults, API format, and error handling natively. No need to specify model. Gemini's non-OpenAI-compatible embedding API works correctly. |
-| 4 | Behavior when no embedding-capable provider is configured? | Inject `memorySearch.enabled: false` when no embedding provider exists and user hasn't configured their own | Eliminates noisy runtime errors for the common "Anthropic-only" case while preserving the user override escape hatch. |
+| 4 | Behavior when no embedding-capable provider is configured? | Disable it with the active schema's key when no embedding provider exists and user hasn't configured their own | Eliminates noisy runtime errors for the common "Anthropic-only" case while preserving the user override escape hatch. |
 | 5 | Should custom providers be eligible for memory search? | No automatic selection; users configure via `spec.config.raw` | Safe default. Users with custom embedding endpoints (vLLM, Ollama, LiteLLM) configure manually, which triggers the skip behavior. Can expand to auto-selection later if demanded. |
 
 ---
@@ -75,12 +75,13 @@ spec:
     raw:
       agents:
         defaults:
-          memorySearch:
-            provider: "openai-compatible"
-            model: "my-embedding-model"
-            remote:
-              baseUrl: "http://my-endpoint/v1"
-              apiKey: "placeholder"
+          memory:
+            search:
+              provider: "openai-compatible"
+              model: "my-embedding-model"
+              remote:
+                baseUrl: "http://my-endpoint/v1"
+                apiKey: "placeholder"
 ```
 
 This triggers the user-override skip behavior — the operator leaves their config untouched.

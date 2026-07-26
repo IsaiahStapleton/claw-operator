@@ -192,32 +192,34 @@ func TestClawConfigMapController(t *testing.T) {
 				}, configMap) == nil
 			}, "ConfigMap should be created")
 
-			operatorJSON, ok := configMap.Data["operator.json"]
-			require.True(t, ok, "operator.json key must exist")
+			operatorJSON, ok := configMap.Data[operatorJSON72Key]
+			require.True(t, ok, "operator-7.2.json key must exist")
 
 			var config map[string]any
 			require.NoError(t, json.Unmarshal([]byte(operatorJSON), &config))
 
 			_, hasGateway := config["gateway"]
-			assert.True(t, hasGateway, "operator.json should contain gateway section")
+			assert.True(t, hasGateway, "operator-7.2.json should contain gateway section")
 
 			_, hasModels := config["models"]
-			assert.True(t, hasModels, "operator.json should contain models section")
+			assert.True(t, hasModels, "operator-7.2.json should contain models section")
 
 			agents, hasAgents := config["agents"].(map[string]any)
-			require.True(t, hasAgents, "operator.json should contain agents section (model catalog)")
+			require.True(t, hasAgents, "operator-7.2.json should contain agents section (model catalog)")
 			defaults, hasDefaults := agents["defaults"].(map[string]any)
 			require.True(t, hasDefaults, "agents should contain defaults section")
 			_, hasModelCatalog := defaults["models"]
-			assert.True(t, hasModelCatalog, "operator.json should contain agents.defaults.models (model catalog)")
+			assert.True(t, hasModelCatalog, "operator-7.2.json should contain agents.defaults.models (model catalog)")
 			model, hasModel := defaults["model"].(map[string]any)
 			require.True(t, hasModel, "defaults should contain model section")
-			assert.NotEmpty(t, model["primary"], "operator.json should have primary model set")
+			assert.NotEmpty(t, model["primary"], "operator-7.2.json should have primary model set")
 
-			memorySearch, hasMemorySearch := defaults["memorySearch"].(map[string]any)
-			require.True(t, hasMemorySearch, "operator.json should contain agents.defaults.memorySearch")
+			memory, hasMemory := config["memory"].(map[string]any)
+			require.True(t, hasMemory, "operator-7.2.json should contain memory section")
+			memorySearch, hasMemorySearch := memory["search"].(map[string]any)
+			require.True(t, hasMemorySearch, "operator-7.2.json should contain memory.search")
 			assert.Equal(t, "gemini", memorySearch["provider"],
-				"Google apiKey credential should auto-configure memorySearch provider to gemini")
+				"Google apiKey credential should auto-configure memory.search provider to gemini")
 		})
 
 		t.Run("should have openclaw.json seed without hardcoded models", func(t *testing.T) {

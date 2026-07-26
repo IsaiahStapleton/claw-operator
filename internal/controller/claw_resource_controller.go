@@ -76,6 +76,8 @@ const (
 	configKeyGateway   = "gateway"
 	configKeyControlUI = "controlUi"
 	operatorJSONKey    = "operator.json"
+	operatorJSON72Key  = "operator-7.2.json"
+	migrationJSONKey   = "migration.json"
 
 	// Gateway networking
 	gatewayPort              = 18789
@@ -415,12 +417,13 @@ type ClawResourceReconciler struct {
 // +kubebuilder:rbac:groups=claw.sandbox.redhat.com,resources=claws/finalizers,verbs=update
 // +kubebuilder:rbac:groups="",resources=configmaps,verbs=get;list;watch;create;update;patch
 // +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch;create;update;patch
-// +kubebuilder:rbac:groups="",resources=pods,verbs=get;list
+// +kubebuilder:rbac:groups="",resources=pods,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=persistentvolumeclaims,verbs=get;list;watch;create;update;patch
 // +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=networking.k8s.io,resources=networkpolicies,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=serviceaccounts,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=services,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=batch,resources=jobs,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=route.openshift.io,resources=routes,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=route.openshift.io,resources=routes/custom-host,verbs=create;update
 // +kubebuilder:rbac:groups=monitoring.coreos.com,resources=servicemonitors,verbs=get;list;watch;create;update;patch;delete
@@ -583,6 +586,15 @@ func (r *ClawResourceReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	if err := r.configureDeployments(instance, objects, resolvedCreds, personaKeys); err != nil {
 		return ctrl.Result{}, err
 	}
+	doctorFixActive, err := r.hasActiveDoctorFix(ctx, instance)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+	if doctorFixPending(instance) || doctorFixActive {
+		if err := pauseGatewayForDoctorFix(objects, instance); err != nil {
+			return ctrl.Result{}, err
+		}
+	}
 
 	// Stamp proxy config hash to trigger rollout on config changes
 	proxyConfigHash := fmt.Sprintf("%x", sha256.Sum256(proxyConfigJSON))
@@ -688,6 +700,9 @@ func (r *ClawResourceReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	// Apply remaining resources (ConfigMap, Deployments, Services, NetworkPolicies)
 	if _, err := r.applyResources(ctx, remainingObjects); err != nil {
 		return ctrl.Result{}, err
+	}
+	if doctorFixPending(instance) || doctorFixActive {
+		return r.reconcileDoctorFix(ctx, instance)
 	}
 
 	// Reconcile ServiceMonitor (separate from bulk apply — CRD may not exist)
@@ -833,7 +848,7 @@ func (r *ClawResourceReconciler) enrichConfigAndNetworkPolicy(
 	injectMemorySearch(config, instance)
 	// userConfig was parsed above; reuse it to decide memorySearch ownership
 	// instead of re-parsing spec.config.raw inside injectMemoryStack.
-	injectMemoryStack(config, instance, userHasMemorySearchConfig(userConfig))
+	injectMemoryStack(config, instance, userHasMemorySearchConfig(userConfig, true))
 	if err := injectChannels(config, instance); err != nil {
 		return fmt.Errorf("failed to inject channels: %w", err)
 	}
@@ -848,12 +863,8 @@ func (r *ClawResourceReconciler) enrichConfigAndNetworkPolicy(
 		injectBootstrapHook(config)
 	}
 
-	updatedJSON, err := json.MarshalIndent(config, "    ", "  ")
-	if err != nil {
-		return fmt.Errorf("failed to marshal enriched operator.json: %w", err)
-	}
-	if err := unstructured.SetNestedField(cmObj.Object, string(updatedJSON), "data", operatorJSONKey); err != nil {
-		return fmt.Errorf("failed to write enriched operator.json back to ConfigMap: %w", err)
+	if err := writeGeneratedConfig(cmObj, config, instance); err != nil {
+		return err
 	}
 	if err := injectWorkspaceFiles(objects, instance); err != nil {
 		return fmt.Errorf("failed to inject workspace files: %w", err)
@@ -903,6 +914,88 @@ func (r *ClawResourceReconciler) enrichConfigAndNetworkPolicy(
 		return fmt.Errorf("failed to stamp gateway config hash: %w", err)
 	}
 	return nil
+}
+
+func writeGeneratedConfig(cmObj *unstructured.Unstructured, config map[string]any, instance *clawv1alpha1.Claw) error {
+	updatedJSON, err := json.MarshalIndent(config, "    ", "  ")
+	if err != nil {
+		return fmt.Errorf("failed to marshal enriched operator.json: %w", err)
+	}
+	legacyJSON, err := legacyOperatorJSON(config, instance)
+	if err != nil {
+		return err
+	}
+	if err := unstructured.SetNestedField(cmObj.Object, legacyJSON, "data", operatorJSONKey); err != nil {
+		return fmt.Errorf("failed to write legacy operator.json back to ConfigMap: %w", err)
+	}
+	if err := unstructured.SetNestedField(cmObj.Object, string(updatedJSON), "data", operatorJSON72Key); err != nil {
+		return fmt.Errorf("failed to write OpenClaw 7.2 config back to ConfigMap: %w", err)
+	}
+	migrationJSON, err := json.Marshal(map[string]bool{"doctorFixComplete": doctorFixComplete(instance)})
+	if err != nil {
+		return fmt.Errorf("marshal doctor migration status: %w", err)
+	}
+	if err := unstructured.SetNestedField(cmObj.Object, string(migrationJSON), "data", migrationJSONKey); err != nil {
+		return fmt.Errorf("failed to write doctor migration status to ConfigMap: %w", err)
+	}
+	return nil
+}
+
+func legacyOperatorJSON(current map[string]any, instance *clawv1alpha1.Claw) (string, error) {
+	encoded, err := json.Marshal(current)
+	if err != nil {
+		return "", fmt.Errorf("marshal current OpenClaw config: %w", err)
+	}
+	var legacy map[string]any
+	if err := json.Unmarshal(encoded, &legacy); err != nil {
+		return "", fmt.Errorf("copy current OpenClaw config: %w", err)
+	}
+
+	defaults := ensureNestedMap(ensureNestedMap(legacy, "agents"), "defaults")
+	delete(defaults, "modelPolicy")
+	if memory, ok := legacy["memory"].(map[string]any); ok {
+		if search, exists := memory["search"]; exists {
+			if _, hasLegacySearch := defaults["memorySearch"]; !hasLegacySearch {
+				defaults["memorySearch"] = search
+			}
+			delete(memory, "search")
+		}
+		if len(memory) == 0 {
+			delete(legacy, "memory")
+		}
+	}
+	ensureNestedMap(ensureNestedMap(legacy, configKeyGateway), configKeyControlUI)["dangerouslyDisableDeviceAuth"] = shouldDisableDevicePairing(instance.Spec.Auth)
+
+	if models, ok := legacy["models"].(map[string]any); ok {
+		if providers, ok := models["providers"].(map[string]any); ok {
+			configuredProviders := make(map[string]any, len(providers))
+			for name, entry := range providers {
+				configuredProviders[name] = entry
+			}
+			for name, entry := range configuredProviders {
+				provider, ok := entry.(map[string]any)
+				if !ok {
+					continue
+				}
+				for _, companion := range knownProviders[name].Companions {
+					if _, exists := providers[companion]; exists {
+						continue
+					}
+					override := map[string]any{}
+					if api := knownProviders[companion].API; api != "" {
+						override["api"] = api
+					}
+					providers[companion] = deepMerge(provider, override)
+				}
+			}
+		}
+	}
+
+	encoded, err = json.MarshalIndent(legacy, "    ", "  ")
+	if err != nil {
+		return "", fmt.Errorf("marshal legacy OpenClaw config: %w", err)
+	}
+	return string(encoded), nil
 }
 
 // findObject locates an unstructured object by kind and name.
@@ -1378,6 +1471,7 @@ func injectRouteHost(config map[string]any, routeHost string) {
 func injectProviders(config map[string]any, instance *clawv1alpha1.Claw) error {
 	providers := map[string]any{}
 	for _, cred := range instance.Spec.Credentials {
+		cred.Provider = canonicalProviderID(cred.Provider)
 		if cred.Provider == "" || cred.Type == clawv1alpha1.CredentialTypePathToken {
 			continue
 		}
@@ -1404,12 +1498,6 @@ func injectProviders(config map[string]any, instance *clawv1alpha1.Claw) error {
 			info := resolveProviderInfo(cred)
 			baseURL := info.Upstream + info.BasePath
 			providers[cred.Provider] = buildProviderEntry(cred.Provider, baseURL, "ah-ah-ah-you-didnt-say-the-magic-word")
-			for _, companion := range knownProviders[cred.Provider].Companions {
-				if _, exists := providers[companion]; exists {
-					return fmt.Errorf("duplicate provider %q (companion of %q) in credentials", companion, cred.Provider)
-				}
-				providers[companion] = buildProviderEntry(companion, baseURL, "ah-ah-ah-you-didnt-say-the-magic-word")
-			}
 		}
 	}
 
@@ -1439,15 +1527,16 @@ func injectProviders(config map[string]any, instance *clawv1alpha1.Claw) error {
 }
 
 // injectModelCatalog merges the hardcoded model catalog into
-// agents.defaults.models and sets the default primary + fallback chain.
-// Catalog entries fill gaps; user entries from spec.config.raw win on
-// collision. For primary and fallbacks: user values win over catalog defaults.
+// agents.defaults.models, derives its modelPolicy.allow list, and sets the
+// default primary + fallback chain. Catalog entries fill gaps; user entries
+// from spec.config.raw win on collision, including an explicit modelPolicy.
 func injectModelCatalog(config map[string]any, instance *clawv1alpha1.Claw) {
 	catalogModels := map[string]any{}
 	var catalogPrimary string
 	var catalogFallbacks []string
 
 	for _, cred := range instance.Spec.Credentials {
+		cred.Provider = canonicalProviderID(cred.Provider)
 		if cred.Provider == "" || cred.Type == clawv1alpha1.CredentialTypePathToken {
 			continue
 		}
@@ -1508,6 +1597,19 @@ func injectModelCatalog(config map[string]any, instance *clawv1alpha1.Claw) {
 		}
 	}
 	defaults["models"] = userModels
+
+	if _, hasExplicitPolicy := defaults["modelPolicy"].(map[string]any); !hasExplicitPolicy {
+		modelRefs := make([]string, 0, len(userModels))
+		for modelRef := range userModels {
+			modelRefs = append(modelRefs, modelRef)
+		}
+		slices.Sort(modelRefs)
+		allow := make([]any, len(modelRefs))
+		for i, modelRef := range modelRefs {
+			allow[i] = modelRef
+		}
+		defaults["modelPolicy"] = map[string]any{"allow": allow}
+	}
 
 	modelMap, _ := defaults["model"].(map[string]any)
 	if modelMap == nil {

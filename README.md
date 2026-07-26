@@ -19,7 +19,7 @@ The operator applies multiple layers of defense:
 - **Network isolation** -- OpenClaw pods cannot reach the internet directly; outbound external traffic is forced through the credential proxy via NetworkPolicy. The proxy only allows HTTPS (port 443) egress and rejects any domain not explicitly configured.
 - **Ingress restriction** -- only the OpenShift router namespace can reach the gateway port (NetworkPolicy on ingress).
 - **Gateway authentication** -- two modes: `token` (default) auto-generates a 256-bit token per instance; `password` uses a shared password from a Kubernetes Secret. See `spec.auth` in the [CRD reference](docs/adr/0011-password-auth-mode.md).
-- **Device pairing** -- when enabled via `spec.auth.disableDevicePairing: false`, remote browser connections require a one-time approval via CLI before they can interact with the instance. Disabled by default.
+- **Device pairing** -- OpenClaw 7.2 instances require a one-time approval before remote browser connections can interact with them. The init container selects the compatible generated config from the OpenClaw version in the gateway image, so older instances retain their configured behavior.
 
 ## Installation (OLM)
 
@@ -224,23 +224,34 @@ oc port-forward svc/instance 18789:18789 -n $NS
 
 **Password mode:** If you prefer shared password access (useful for workshops, demos, or shared team instances), create a Secret with the password and set `spec.auth.mode: password` on the Claw CR. Users enter the password in the browser instead of using a token. See [ADR-0011](docs/adr/0011-password-auth-mode.md) for details.
 
-### 6. Pair Your Device (opt-in)
+### 6. Pair Your Device
 
-Device pairing is disabled by default. To enable it, set `spec.auth.disableDevicePairing: false` on the Claw CR.
-
-When enabled, on first connection you'll see "pairing required". With the browser tab open, approve the request:
+On first connection you'll see "pairing required". With the browser tab open, list and approve the current request from the gateway pod:
 
 ```sh
-make approve-pairing NS=$NS
-# or, for a non-default instance name:
-# make approve-pairing NS=$NS CLAW=my-instance
+oc -n $NS exec deploy/instance -c gateway -- node /app/dist/index.js devices list
+oc -n $NS exec deploy/instance -c gateway -- node /app/dist/index.js devices approve <requestId>
 ```
-
-This picks the first pending request and asks for confirmation.
 
 Refresh the browser after approval. The device is remembered across sessions.
 
-> **Note:** Device pairing is disabled by default in all auth modes. Set `spec.auth.disableDevicePairing: false` to enable it.
+### 7. Migrate a Claw to OpenClaw 7.2
+
+The operator writes both compatible generated configurations. OpenClaw 7.2
+(including 7.2 beta builds) needs a one-time, user-approved doctor migration
+before it can use the current schema. Opt in on the Claw itself:
+
+```yaml
+spec:
+  migration:
+    doctorFix: true
+```
+
+The operator pauses the gateway, runs `openclaw doctor --fix --non-interactive`
+with the target image against the Claw PVC, records the completed image in
+status, and then starts the gateway with the matching config. The opt-in is
+also available for older versions; it runs once again when the target image
+reference changes. No migration annotation is required.
 
 ## Makefile Targets
 
@@ -252,7 +263,7 @@ Run `make help` for a full list. Key targets:
 | `make dev-build dev-push dev-deploy REGISTRY=...` | Step-by-step dev iteration |
 | `make dev-cleanup` | Tear down deployed controller and CRDs |
 | `make wait-ready NS=... [CLAW=...]` | Wait for ready, print URL + token |
-| `make approve-pairing NS=... [CLAW=...]` | List & approve a device pairing request |
+| `make approve-pairing NS=... [CLAW=...] REQUEST_ID=...` | Approve a reviewed device pairing request |
 | `make test` | Run unit tests |
 | `make test-e2e` | Run e2e tests (requires Kind) |
 | `make lint` | Run golangci-lint |

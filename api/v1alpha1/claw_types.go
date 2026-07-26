@@ -87,6 +87,7 @@ const (
 	ConditionTypePluginCompatibility  = "PluginCompatibility"
 	ConditionTypeVersionDowngrade     = "VersionDowngrade"
 	ConditionTypeMemoryStack          = "MemoryStack"
+	ConditionTypeMigrationComplete    = "MigrationComplete"
 )
 
 // Annotation keys used on pod templates to trigger rollouts on config changes.
@@ -116,6 +117,9 @@ const (
 	ConditionReasonMemoryStackEnabled     = "Enabled"
 	ConditionReasonMemoryStackNoVectors   = "EnabledNoVectors"
 	ConditionReasonMemoryStackUserManaged = "UserManaged"
+	ConditionReasonMigrationPending       = "MigrationPending"
+	ConditionReasonMigrationFailed        = "MigrationFailed"
+	ConditionReasonMigrationComplete      = "MigrationComplete"
 )
 
 // SecretRefEntry references a specific key in a Secret.
@@ -490,10 +494,8 @@ type AuthSpec struct {
 	// +optional
 	PasswordSecretRef *SecretRefEntry `json:"passwordSecretRef,omitempty"`
 
-	// DisableDevicePairing disables browser device identity checks
-	// (maps to gateway.controlUi.dangerouslyDisableDeviceAuth upstream).
-	// Defaults to true (device pairing is disabled by default).
-	// Set to false to enable device pairing.
+	// Controls the device-auth bypass for the legacy generated config. The
+	// image-selected OpenClaw 7.2 config requires device identity.
 	// +optional
 	DisableDevicePairing *bool `json:"disableDevicePairing,omitempty"`
 }
@@ -528,6 +530,15 @@ type ConfigSpec struct {
 	// +kubebuilder:validation:Enum=operator;user
 	// +kubebuilder:default=operator
 	Management ConfigManagement `json:"management,omitempty"`
+}
+
+// MigrationSpec controls one-time, user-approved OpenClaw data migrations.
+type MigrationSpec struct {
+	// DoctorFix runs `openclaw doctor --fix --non-interactive` once for each
+	// target image reference. The operator stops the gateway before the Job
+	// accesses its PVC, then resumes it after a successful migration.
+	// +optional
+	DoctorFix bool `json:"doctorFix,omitempty"`
 }
 
 // RawConfig holds arbitrary JSON configuration for openclaw.json.
@@ -789,8 +800,9 @@ type CustomProviderSpec struct {
 	CredentialRef string `json:"credentialRef"`
 
 	// Models lists the models available on this endpoint.
-	// Each model is registered in agents.defaults.models with the provider
-	// name prefix (e.g., "my-vllm/qwen3-14b").
+	// Each model is registered as catalog metadata with the provider name prefix
+	// (e.g., "my-vllm/qwen3-14b"). The 7.2 config generator also includes it in
+	// modelPolicy.allow.
 	// +kubebuilder:validation:MinItems=1
 	Models []CustomModelEntry `json:"models"`
 }
@@ -870,10 +882,13 @@ type ClawSpec struct {
 	// +optional
 	Config *ConfigSpec `json:"config,omitempty"`
 
+	// Migration controls explicit, one-time data migrations for this Claw.
+	// +optional
+	Migration *MigrationSpec `json:"migration,omitempty"`
+
 	// Auth configures gateway authentication. Defaults to token-based
-	// authentication with device pairing disabled. Set mode to "password" for
-	// shared-password access, or set disableDevicePairing to false to enable
-	// device pairing.
+	// authentication. The legacy generated config preserves its device-pairing
+	// setting; the OpenClaw 7.2 config requires device identity.
 	// +optional
 	Auth *AuthSpec `json:"auth,omitempty"`
 
@@ -1009,6 +1024,18 @@ type GatewayResourcesSpec struct {
 	Limits corev1.ResourceList `json:"limits,omitempty"`
 }
 
+// MigrationStatus records the image reference most recently migrated by the
+// user-approved doctor Job.
+type MigrationStatus struct {
+	// DoctorFixImage is the target image reference whose doctor Job succeeded.
+	// +optional
+	DoctorFixImage string `json:"doctorFixImage,omitempty"`
+
+	// DoctorFixJob is the Job that completed the migration.
+	// +optional
+	DoctorFixJob string `json:"doctorFixJob,omitempty"`
+}
+
 // ClawStatus defines the observed state of Claw
 type ClawStatus struct {
 	// Image is the resolved OpenClaw container image for this instance.
@@ -1040,6 +1067,10 @@ type ClawStatus struct {
 	// Used to detect version downgrades that may cause PVC data incompatibility.
 	// +optional
 	LastDeployedVersion string `json:"lastDeployedVersion,omitempty"`
+
+	// Migration records completed user-approved data migrations.
+	// +optional
+	Migration *MigrationStatus `json:"migration,omitempty"`
 }
 
 // +kubebuilder:object:root=true
