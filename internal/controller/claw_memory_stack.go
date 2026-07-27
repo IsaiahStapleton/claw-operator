@@ -105,6 +105,12 @@ func injectMemoryStack(config map[string]any, instance *clawv1alpha1.Claw, userO
 		return
 	}
 
+	// injectMemorySearch already set memorySearch.provider for this credential,
+	// which leaves search enabled by default, so this looks redundant. It is not:
+	// an instance that reconciled without an embedding-capable credential had
+	// memorySearch.enabled: false written to its PVC config, and deep-merge never
+	// removes it. Writing true here repairs that stale value when a credential is
+	// added later.
 	if _, ok := firstEmbeddingProvider(instance); ok && !userOwnsMemorySearch {
 		setNestedValue(config, true, "agents", "defaults", "memorySearch", "enabled")
 	}
