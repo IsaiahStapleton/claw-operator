@@ -102,20 +102,20 @@ const (
 
 // Condition reasons for Claw status.
 const (
-	ConditionReasonReady                = "Ready"
-	ConditionReasonProvisioning         = "Provisioning"
-	ConditionReasonResolved             = "Resolved"
-	ConditionReasonValidationFailed     = "ValidationFailed"
-	ConditionReasonConfigured           = "Configured"
-	ConditionReasonConfigFailed         = "ConfigFailed"
-	ConditionReasonIdle                 = "Idle"
-	ConditionReasonIdledByRequest       = "IdledByRequest"
-	ConditionReasonIncompatible         = "Incompatible"
-	ConditionReasonVersionDowngrade     = "VersionDowngrade"
-	ConditionReasonInitContainerFailure = "InitContainerFailure"
-	ConditionReasonMemoryStackDisabled  = "Disabled"
-	ConditionReasonMemoryStackEnabled   = "Enabled"
-	ConditionReasonMemoryStackNoVectors = "EnabledNoVectors"
+	ConditionReasonReady                  = "Ready"
+	ConditionReasonProvisioning           = "Provisioning"
+	ConditionReasonResolved               = "Resolved"
+	ConditionReasonValidationFailed       = "ValidationFailed"
+	ConditionReasonConfigured             = "Configured"
+	ConditionReasonConfigFailed           = "ConfigFailed"
+	ConditionReasonIdle                   = "Idle"
+	ConditionReasonIdledByRequest         = "IdledByRequest"
+	ConditionReasonIncompatible           = "Incompatible"
+	ConditionReasonVersionDowngrade       = "VersionDowngrade"
+	ConditionReasonInitContainerFailure   = "InitContainerFailure"
+	ConditionReasonMemoryStackEnabled     = "Enabled"
+	ConditionReasonMemoryStackNoVectors   = "EnabledNoVectors"
+	ConditionReasonMemoryStackUserManaged = "UserManaged"
 )
 
 // SecretRefEntry references a specific key in a Secret.

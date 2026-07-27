@@ -223,13 +223,19 @@ func TestSetMemoryStackCondition(t *testing.T) {
 	}
 	openaiCreds := []clawv1alpha1.CredentialSpec{{Name: "openai", Type: clawv1alpha1.CredentialTypeAPIKey, Provider: "openai"}}
 
-	t.Run("disabled", func(t *testing.T) {
+	t.Run("disabled reports no condition", func(t *testing.T) {
 		instance := &clawv1alpha1.Claw{Spec: clawv1alpha1.ClawSpec{Memory: &clawv1alpha1.MemorySpec{Enabled: ptr.To(false)}}}
 		setMemoryStackCondition(instance)
-		c := cond(instance)
-		require.NotNil(t, c)
-		assert.Equal(t, metav1.ConditionFalse, c.Status)
-		assert.Equal(t, clawv1alpha1.ConditionReasonMemoryStackDisabled, c.Reason)
+		assert.Nil(t, cond(instance), "opted-out instances must not carry a MemoryStack condition")
+	})
+	t.Run("disabling removes a previously set condition", func(t *testing.T) {
+		instance := &clawv1alpha1.Claw{Spec: clawv1alpha1.ClawSpec{Memory: &clawv1alpha1.MemorySpec{Enabled: ptr.To(true)}, Credentials: openaiCreds}}
+		setMemoryStackCondition(instance)
+		require.NotNil(t, cond(instance))
+
+		instance.Spec.Memory.Enabled = ptr.To(false)
+		setMemoryStackCondition(instance)
+		assert.Nil(t, cond(instance))
 	})
 	t.Run("enabled with vectors", func(t *testing.T) {
 		instance := &clawv1alpha1.Claw{Spec: clawv1alpha1.ClawSpec{Memory: &clawv1alpha1.MemorySpec{Enabled: ptr.To(true)}, Credentials: openaiCreds}}
@@ -247,6 +253,45 @@ func TestSetMemoryStackCondition(t *testing.T) {
 		require.NotNil(t, c)
 		assert.Equal(t, metav1.ConditionTrue, c.Status)
 		assert.Equal(t, clawv1alpha1.ConditionReasonMemoryStackNoVectors, c.Reason)
+	})
+	t.Run("user-owned context engine does not claim an applied stack", func(t *testing.T) {
+		// injectMemoryStack backs off entirely for a user-set contextEngine, so
+		// the condition must not report a stack the operator never seeded.
+		instance := &clawv1alpha1.Claw{Spec: clawv1alpha1.ClawSpec{
+			Credentials: openaiCreds,
+			Memory:      &clawv1alpha1.MemorySpec{Enabled: ptr.To(true)},
+			Config: &clawv1alpha1.ConfigSpec{
+				Raw: &clawv1alpha1.RawConfig{
+					RawExtension: runtime.RawExtension{Raw: []byte(`{"plugins":{"slots":{"contextEngine":"custom"}}}`)},
+				},
+			},
+		}}
+		setMemoryStackCondition(instance)
+		c := cond(instance)
+		require.NotNil(t, c)
+		assert.Equal(t, metav1.ConditionFalse, c.Status)
+		assert.Equal(t, clawv1alpha1.ConditionReasonMemoryStackUserManaged, c.Reason)
+		assert.Contains(t, c.Message, "plugins.slots.contextEngine")
+	})
+	t.Run("user-tuned memory entry still reports an applied stack", func(t *testing.T) {
+		// A tuning knob on memory-core does not suppress seeding (the operator
+		// still owns the layers), so the condition must not claim UserManaged.
+		instance := &clawv1alpha1.Claw{Spec: clawv1alpha1.ClawSpec{
+			Credentials: openaiCreds,
+			Memory:      &clawv1alpha1.MemorySpec{Enabled: ptr.To(true)},
+			Config: &clawv1alpha1.ConfigSpec{
+				Raw: &clawv1alpha1.RawConfig{
+					RawExtension: runtime.RawExtension{
+						Raw: []byte(`{"plugins":{"entries":{"memory-core":{"config":{"dreaming":{"phases":{"deep":{"minScore":0.45}}}}}}}}`),
+					},
+				},
+			},
+		}}
+		setMemoryStackCondition(instance)
+		c := cond(instance)
+		require.NotNil(t, c)
+		assert.Equal(t, metav1.ConditionTrue, c.Status)
+		assert.Equal(t, clawv1alpha1.ConditionReasonMemoryStackEnabled, c.Reason)
 	})
 	t.Run("user-owned memorySearch does not claim vector recall", func(t *testing.T) {
 		// An embedding-capable credential is present, but the user disabled

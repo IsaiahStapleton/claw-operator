@@ -20,6 +20,7 @@ import (
 	"fmt"
 
 	clawv1alpha1 "github.com/codeready-toolchain/claw-operator/api/v1alpha1"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 )
@@ -80,6 +81,18 @@ func userConfiguredMemorySearch(instance *clawv1alpha1.Claw) bool {
 	return userHasMemorySearchConfig(rawCfg)
 }
 
+// userConfiguredMemoryStack reports whether the user set a context engine in
+// spec.config.raw. It is the status-side counterpart of the guard
+// injectMemoryStack applies to the merged config: spec.config.raw is the only
+// source of plugins.slots.contextEngine (neither the operator.json template nor
+// any other injector writes it), so the two agree on when the operator backs
+// off. Tuning knobs under the memory-* entries do not count, matching
+// userHasMemoryStackConfig.
+func userConfiguredMemoryStack(instance *clawv1alpha1.Claw) bool {
+	rawCfg, _ := parseUserRawConfig(instance)
+	return userHasMemoryStackConfig(rawCfg)
+}
+
 // injectMemoryStack writes the default memory/context stack into operator.json:
 // native layers (memory-core dreaming, memory-wiki, and vector recall when an
 // embedding credential exists) are seeded whenever memory is enabled. Skipped
@@ -133,13 +146,29 @@ Keep this short to limit token burn.
 The memory wiki is auto-compiled from your memory; you do not edit it by hand.
 `
 
-// setMemoryStackCondition records the MemoryStack status condition. The native
-// memory layers function whenever the stack is enabled, so the condition is True
-// for every enabled case; the reason reflects vector recall state.
+// setMemoryStackCondition records the MemoryStack status condition. The
+// condition is only reported for instances that opted in: like the
+// McpServersConfigured condition, it is removed rather than set to False when
+// the feature is not requested, so instances that never enabled memory do not
+// grow a permanent condition. When the stack is on, the native memory layers
+// function in every case the operator manages, so the condition is True and the
+// reason reflects vector recall state.
 func setMemoryStackCondition(instance *clawv1alpha1.Claw) {
 	if !memoryStackEnabled(instance) {
+		meta.RemoveStatusCondition(&instance.Status.Conditions, clawv1alpha1.ConditionTypeMemoryStack)
+		return
+	}
+
+	// injectMemoryStack backs off entirely when the user selects their own
+	// context engine, so the operator seeds nothing and cannot claim the stack is
+	// applied. Report that explicitly instead of asserting an enabled stack the
+	// operator did not configure. Tuning knobs on the memory-* entries do not
+	// reach here: those still seed, so the stack really is applied.
+	if userConfiguredMemoryStack(instance) {
 		setCondition(instance, clawv1alpha1.ConditionTypeMemoryStack, metav1.ConditionFalse,
-			clawv1alpha1.ConditionReasonMemoryStackDisabled, "Memory stack disabled via spec.memory.enabled")
+			clawv1alpha1.ConditionReasonMemoryStackUserManaged,
+			"spec.memory.enabled is true but plugins.slots.contextEngine in spec.config.raw takes "+
+				"precedence; the operator is not managing the memory layers")
 		return
 	}
 
