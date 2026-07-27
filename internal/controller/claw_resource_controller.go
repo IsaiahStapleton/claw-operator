@@ -858,9 +858,6 @@ func (r *ClawResourceReconciler) enrichConfigAndNetworkPolicy(
 	if err := injectWorkspaceFiles(objects, instance); err != nil {
 		return fmt.Errorf("failed to inject workspace files: %w", err)
 	}
-	if err := injectMemoryWorkspaceFiles(objects, instance); err != nil {
-		return fmt.Errorf("failed to inject memory workspace files: %w", err)
-	}
 	if !userManagedConfig(instance) {
 		if err := injectSkillFiles(objects, instance); err != nil {
 			return fmt.Errorf("failed to inject skill files: %w", err)

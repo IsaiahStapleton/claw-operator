@@ -25,7 +25,6 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -204,19 +203,6 @@ func TestInjectMemoryStack(t *testing.T) {
 	})
 }
 
-func makeConfigMapObjects() []*unstructured.Unstructured {
-	cm := &unstructured.Unstructured{}
-	cm.SetKind(ConfigMapKind)
-	cm.SetName(getConfigMapName(testInstanceName))
-	cm.Object["data"] = map[string]any{}
-	return []*unstructured.Unstructured{cm}
-}
-
-func cmData(objects []*unstructured.Unstructured) map[string]any {
-	data, _, _ := unstructured.NestedMap(objects[0].Object, "data")
-	return data
-}
-
 func TestSetMemoryStackCondition(t *testing.T) {
 	cond := func(instance *clawv1alpha1.Claw) *metav1.Condition {
 		return meta.FindStatusCondition(instance.Status.Conditions, clawv1alpha1.ConditionTypeMemoryStack)
@@ -316,35 +302,10 @@ func TestSetMemoryStackCondition(t *testing.T) {
 	})
 }
 
-func TestInjectMemoryWorkspaceFiles(t *testing.T) {
-	t.Run("seeds HEARTBEAT.md when enabled", func(t *testing.T) {
-		objects := makeConfigMapObjects()
-		instance := &clawv1alpha1.Claw{
-			ObjectMeta: metav1.ObjectMeta{Name: testInstanceName, Namespace: namespace},
-			Spec:       clawv1alpha1.ClawSpec{Memory: &clawv1alpha1.MemorySpec{Enabled: ptr.To(true)}},
-		}
-		require.NoError(t, injectMemoryWorkspaceFiles(objects, instance))
-
-		data := cmData(objects)
-		_, ok := data["_ws_HEARTBEAT.md"].(string)
-		assert.True(t, ok)
-	})
-
-	t.Run("no-op when disabled", func(t *testing.T) {
-		objects := makeConfigMapObjects()
-		instance := &clawv1alpha1.Claw{
-			ObjectMeta: metav1.ObjectMeta{Name: testInstanceName, Namespace: namespace},
-			Spec:       clawv1alpha1.ClawSpec{Memory: &clawv1alpha1.MemorySpec{Enabled: ptr.To(false)}},
-		}
-		require.NoError(t, injectMemoryWorkspaceFiles(objects, instance))
-		assert.Empty(t, cmData(objects))
-	})
-}
-
 // --- Integration test ---
 
 func TestMemoryStackIntegration(t *testing.T) {
-	t.Run("fresh memory-on instance wires config, workspace files, condition", func(t *testing.T) {
+	t.Run("fresh memory-on instance wires config and condition", func(t *testing.T) {
 		t.Cleanup(func() { deleteAndWaitAllResources(t, namespace) })
 
 		secret := createTestAPIKeySecret(aiModelSecret, namespace, aiModelSecretKey, aiModelSecretValue)
@@ -382,10 +343,6 @@ func TestMemoryStackIntegration(t *testing.T) {
 		assert.Contains(t, cm.Data[operatorJSONKey], "memorySearch", "operator.json must contain memorySearch")
 		assert.NotContains(t, cm.Data[operatorJSONKey], "contextEngine",
 			"operator.json must not select a context engine")
-
-		// ConfigMap carries the _ws_ workspace files.
-		_, hasHeartbeat := cm.Data["_ws_HEARTBEAT.md"]
-		assert.True(t, hasHeartbeat, "HEARTBEAT.md workspace file seeded")
 
 		// MemoryStack condition is set with vectors enabled (google has gemini embedding adapter).
 		updated := &clawv1alpha1.Claw{}

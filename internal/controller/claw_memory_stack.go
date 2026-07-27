@@ -17,12 +17,9 @@ limitations under the License.
 package controller
 
 import (
-	"fmt"
-
 	clawv1alpha1 "github.com/codeready-toolchain/claw-operator/api/v1alpha1"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 )
 
 // memoryStackEnabled reports whether the default memory/context stack should be
@@ -141,17 +138,6 @@ func injectMemoryStack(config map[string]any, instance *clawv1alpha1.Claw, userO
 	setDefault(render, "createDashboards", true)
 }
 
-const memoryHeartbeat = `# Heartbeat checklist
-
-Keep this short to limit token burn.
-
-- Review ` + "`memory/YYYY-MM-DD.md`" + ` for anything still open today.
-- Fold anything durable into ` + "`MEMORY.md`" + `.
-- Surface anything urgent; otherwise reply ` + "`HEARTBEAT_OK`" + `.
-
-The memory wiki is auto-compiled from your memory; you do not edit it by hand.
-`
-
 // setMemoryStackCondition records the MemoryStack status condition. The
 // condition is only reported for instances that opted in: like the
 // McpServersConfigured condition, it is removed rather than set to False when
@@ -197,28 +183,4 @@ func setMemoryStackCondition(instance *clawv1alpha1.Claw) {
 	setCondition(instance, clawv1alpha1.ConditionTypeMemoryStack, metav1.ConditionTrue,
 		clawv1alpha1.ConditionReasonMemoryStackNoVectors,
 		"Memory stack enabled without vector recall, no embedding-capable credential")
-}
-
-// injectMemoryWorkspaceFiles seeds the memory stack's workspace files as _ws_
-// ConfigMap keys (HEARTBEAT.md). The merge.js _ws_ loop seeds them once on the
-// PVC in any management mode, so user edits survive. No-op when the stack is
-// disabled.
-func injectMemoryWorkspaceFiles(objects []*unstructured.Unstructured, instance *clawv1alpha1.Claw) error {
-	if !memoryStackEnabled(instance) {
-		return nil
-	}
-	cmObj, err := findObject(objects, ConfigMapKind, getConfigMapName(instance.Name))
-	if err != nil {
-		return fmt.Errorf("ConfigMap not found in manifests: %w", err)
-	}
-	files := map[string]string{
-		"HEARTBEAT.md": memoryHeartbeat,
-	}
-	for p, content := range files {
-		key := workspaceKeyPrefix + encodeWorkspacePath(p)
-		if err := unstructured.SetNestedField(cmObj.Object, content, "data", key); err != nil {
-			return fmt.Errorf("failed to set memory workspace file %q: %w", p, err)
-		}
-	}
-	return nil
 }
