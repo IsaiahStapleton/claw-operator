@@ -201,6 +201,35 @@ func TestInjectMemoryStack(t *testing.T) {
 		// the native layers still seed:
 		assert.Equal(t, true, memEntries(config)["memory-wiki"].(map[string]any)["enabled"])
 	})
+
+	// Pins the repair described in injectMemoryStack: writing memorySearch.enabled
+	// looks redundant next to injectMemorySearch, but it is what clears a stale
+	// enabled:false left on the PVC by an earlier reconcile that ran without an
+	// embedding-capable credential. Deleting the write as dead code would silently
+	// strand those instances with vector recall off after a credential is added.
+	t.Run("stack repairs a stale memorySearch.enabled:false once a credential exists", func(t *testing.T) {
+		config := map[string]any{}
+		instance := &clawv1alpha1.Claw{Spec: clawv1alpha1.ClawSpec{
+			Memory: &clawv1alpha1.MemorySpec{Enabled: ptr.To(true)},
+			Credentials: []clawv1alpha1.CredentialSpec{
+				{Name: "openai", Type: clawv1alpha1.CredentialTypeAPIKey, Provider: "openai"},
+			},
+		}}
+
+		// With an eligible credential, injectMemorySearch sets only provider and
+		// returns. It never writes enabled, so on its own it leaves the key absent
+		// from operator.json, and merge.js keeps whatever the PVC already holds --
+		// including a stale false.
+		injectMemorySearch(config, instance)
+		_, hasEnabled := memSearch(config)["enabled"]
+		require.False(t, hasEnabled, "injectMemorySearch alone cannot clear a stale enabled:false")
+
+		// The stack's explicit write is what puts enabled:true into operator.json,
+		// which is what overwrites the stale PVC value on the next merge.
+		injectMemoryStack(config, instance, false)
+		assert.Equal(t, true, memSearch(config)["enabled"],
+			"the stack must write enabled:true so merge.js overwrites a stale false on the PVC")
+	})
 }
 
 func TestSetMemoryStackCondition(t *testing.T) {
