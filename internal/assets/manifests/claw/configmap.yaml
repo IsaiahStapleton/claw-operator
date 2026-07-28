@@ -1725,10 +1725,11 @@ data:
     - `agents.defaults.memorySearch` — operator auto-sets `provider` from the first
       embedding-capable credential; if user sets any `memorySearch` key in
       `spec.config.raw`, operator skips injection entirely
-    - `plugins.entries.memory-core`, `plugins.entries.memory-wiki`: written only
-      when `spec.memory.enabled` is true, and only for keys not already set, so
-      tuning knobs in `spec.config.raw` survive; if user sets
-      `plugins.slots.contextEngine`, operator skips the whole memory stack
+    - `plugins.entries.memory-core`, `plugins.entries.memory-wiki`: each written
+      only when its `spec.memory` layer (dreaming, wiki) is enabled, and only for
+      keys not already set, so tuning knobs in `spec.config.raw` survive (explicit
+      CRD fields like `dreaming.frequency` and `wiki.mode` win); if user sets
+      `plugins.slots.contextEngine`, operator skips all memory layers
 
     **User-only (operator never touches — full user control):**
     - `diagnostics.*` (except: when `spec.metrics` is enabled, the operator

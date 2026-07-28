@@ -33,7 +33,7 @@ Because deep-merge operates at the key level, operator-managed entries (e.g., `c
 | Operator | `gateway.*`, `models.providers`, `agents.defaults.models`, `channels.<declared>`, `plugins.entries.<declared>` | Overwritten every restart |
 | Operator → User | `agents.defaults.model.primary` | Set on first run, then preserved |
 | Operator (skip if user overrides) | `agents.defaults.memorySearch` | Auto-set from first embedding-capable credential; skipped entirely if user sets any `memorySearch` key in `spec.config.raw` |
-| Operator (set if absent) | `plugins.entries.memory-core`, `plugins.entries.memory-wiki` | Written only when `spec.memory.enabled` is true, and only for keys the user has not set, so tuning knobs in `spec.config.raw` survive; skipped entirely if user sets `plugins.slots.contextEngine`. Because they are `plugins.entries` keys, `merge.js` prunes them from the PVC config once `spec.memory.enabled` goes back to false |
+| Operator (set if absent) | `plugins.entries.memory-core`, `plugins.entries.memory-wiki` | Each written only when its `spec.memory` layer (dreaming, wiki) is enabled, and only for keys the user has not set, so tuning knobs in `spec.config.raw` survive; explicit CRD fields (`dreaming.frequency`, `dreaming.model`, `wiki.mode`) overwrite raw values; skipped entirely if user sets `plugins.slots.contextEngine`. Because they are `plugins.entries` keys, `merge.js` prunes an entry from the PVC config once its layer is disabled |
 | User | `agents.list`, `plugins.*` (non-declared), `channels.*` (non-declared), `tools.*`, `cron.*` | Preserved across restarts |
 
 In `overwrite` mode, the PVC config is ignored and `operator.json` is merged into the seed `openclaw.json` from the ConfigMap. User edits are wiped on every restart.

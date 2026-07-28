@@ -819,7 +819,7 @@ func createClawInstanceWithMcpServers(t *testing.T, ctx context.Context, name, n
 			// The memory stack is opt-in (off by default); pin it off here so
 			// these egress suites stay focused on egress behavior regardless of
 			// any future default change. The enabled path is covered separately.
-			Memory: &clawv1alpha1.MemorySpec{Enabled: ptr.To(false)},
+			Memory: &clawv1alpha1.MemorySpec{Dreaming: &clawv1alpha1.DreamingSpec{Enabled: ptr.To(false)}, Wiki: &clawv1alpha1.WikiSpec{Enabled: ptr.To(false)}},
 		},
 	}
 	require.NoError(t, k8sClient.Create(ctx, instance))

@@ -17,20 +17,40 @@ limitations under the License.
 package controller
 
 import (
+	"strings"
+
 	clawv1alpha1 "github.com/codeready-toolchain/claw-operator/api/v1alpha1"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
-// memoryStackEnabled reports whether the default memory/context stack should be
-// applied. The stack is OFF by default: a nil spec.memory or a nil
-// spec.memory.enabled both resolve to disabled. Only an explicit
-// spec.memory.enabled: true turns the stack on.
-func memoryStackEnabled(instance *clawv1alpha1.Claw) bool {
-	if instance.Spec.Memory == nil || instance.Spec.Memory.Enabled == nil {
+// dreamingEnabled reports whether memory-core's dreaming consolidation was
+// requested. Off by default: only an explicit spec.memory.dreaming.enabled:
+// true turns it on.
+func dreamingEnabled(instance *clawv1alpha1.Claw) bool {
+	m := instance.Spec.Memory
+	if m == nil || m.Dreaming == nil || m.Dreaming.Enabled == nil {
 		return false
 	}
-	return *instance.Spec.Memory.Enabled
+	return *m.Dreaming.Enabled
+}
+
+// wikiEnabled reports whether the memory-wiki layer was requested. Off by
+// default: only an explicit spec.memory.wiki.enabled: true turns it on.
+func wikiEnabled(instance *clawv1alpha1.Claw) bool {
+	m := instance.Spec.Memory
+	if m == nil || m.Wiki == nil || m.Wiki.Enabled == nil {
+		return false
+	}
+	return *m.Wiki.Enabled
+}
+
+// memoryStackEnabled reports whether any memory layer was requested. The
+// layers are independent; this is only the shared gate for concerns that
+// apply once any of them is on (context-engine back-off, the memorySearch
+// repair, the MemoryStack condition).
+func memoryStackEnabled(instance *clawv1alpha1.Claw) bool {
+	return dreamingEnabled(instance) || wikiEnabled(instance)
 }
 
 // userHasMemoryStackConfig reports whether the merged config already carries
@@ -90,10 +110,10 @@ func userConfiguredMemoryStack(instance *clawv1alpha1.Claw) bool {
 	return userHasMemoryStackConfig(rawCfg)
 }
 
-// injectMemoryStack writes the default memory/context stack into operator.json:
-// native layers (memory-core dreaming, memory-wiki, and vector recall when an
-// embedding credential exists) are seeded whenever memory is enabled. Skipped
-// entirely when the stack is off or the user owns memory config.
+// injectMemoryStack writes the requested memory layers into operator.json.
+// Each layer seeds independently; the memorySearch repair applies once any
+// layer is on, because vector recall is layer-independent. Skipped entirely
+// when no layer is requested or the user owns memory config.
 // userOwnsMemorySearch reports whether the user set memorySearch in
 // spec.config.raw (computed once by the caller); when true the operator does
 // not enable vector recall, leaving that config to the user.
@@ -113,22 +133,54 @@ func injectMemoryStack(config map[string]any, instance *clawv1alpha1.Claw, userO
 	}
 
 	entries := ensureNestedMap(ensureNestedMap(config, "plugins"), "entries")
+	if dreamingEnabled(instance) {
+		injectDreaming(entries, instance.Spec.Memory.Dreaming)
+	}
+	if wikiEnabled(instance) {
+		injectWiki(entries, instance.Spec.Memory.Wiki)
+	}
+}
 
+// injectDreaming seeds the memory-core dreaming block. Seeded keys are
+// defaults the user can override in spec.config.raw; explicit CRD fields
+// (frequency, model) are operator-managed and overwrite a raw value, because
+// a field set on the API is a stronger statement of intent than a merged
+// config key.
+func injectDreaming(entries map[string]any, spec *clawv1alpha1.DreamingSpec) {
 	dreaming := ensureNestedMap(ensureNestedMap(ensureNestedMap(entries, "memory-core"), "config"), "dreaming")
 	setDefault(dreaming, "enabled", true)
+	if spec.Frequency != "" {
+		dreaming["frequency"] = spec.Frequency
+	}
+	if spec.Model != "" {
+		dreaming["model"] = spec.Model
+	}
+}
 
+// injectWiki seeds the memory-wiki entry. An explicit CRD mode is
+// operator-managed and overwrites a raw vaultMode; when unset, bridge is
+// seeded as a default the user may override. The bridge indexing block only
+// seeds when the effective mode is bridge, so an isolated vault does not
+// carry dormant bridge config.
+func injectWiki(entries map[string]any, spec *clawv1alpha1.WikiSpec) {
 	wiki := ensureNestedMap(entries, "memory-wiki")
 	setDefault(wiki, "enabled", true)
 	wcfg := ensureNestedMap(wiki, "config")
-	setDefault(wcfg, "vaultMode", "bridge")
+	if spec.Mode != "" {
+		wcfg["vaultMode"] = string(spec.Mode)
+	} else {
+		setDefault(wcfg, "vaultMode", string(clawv1alpha1.WikiModeBridge))
+	}
 	setDefault(ensureNestedMap(wcfg, "vault"), "path", "~/.openclaw/workspace/wiki/main")
-	bridge := ensureNestedMap(wcfg, "bridge")
-	setDefault(bridge, "enabled", true)
-	setDefault(bridge, "readMemoryArtifacts", true)
-	setDefault(bridge, "indexDreamReports", true)
-	setDefault(bridge, "indexDailyNotes", true)
-	setDefault(bridge, "indexMemoryRoot", true)
-	setDefault(bridge, "followMemoryEvents", true)
+	if wcfg["vaultMode"] == string(clawv1alpha1.WikiModeBridge) {
+		bridge := ensureNestedMap(wcfg, "bridge")
+		setDefault(bridge, "enabled", true)
+		setDefault(bridge, "readMemoryArtifacts", true)
+		setDefault(bridge, "indexDreamReports", true)
+		setDefault(bridge, "indexDailyNotes", true)
+		setDefault(bridge, "indexMemoryRoot", true)
+		setDefault(bridge, "followMemoryEvents", true)
+	}
 	search := ensureNestedMap(wcfg, "search")
 	setDefault(search, "backend", "shared")
 	setDefault(search, "corpus", "all")
@@ -138,49 +190,63 @@ func injectMemoryStack(config map[string]any, instance *clawv1alpha1.Claw, userO
 	setDefault(render, "createDashboards", true)
 }
 
+// enabledMemoryLayers names the requested layers for condition messages, so
+// the status says exactly which layers the operator is managing.
+func enabledMemoryLayers(instance *clawv1alpha1.Claw) string {
+	var layers []string
+	if dreamingEnabled(instance) {
+		layers = append(layers, "dreaming")
+	}
+	if wikiEnabled(instance) {
+		layers = append(layers, "wiki")
+	}
+	return strings.Join(layers, ", ")
+}
+
 // setMemoryStackCondition records the MemoryStack status condition. The
-// condition is only reported for instances that opted in: like the
-// McpServersConfigured condition, it is removed rather than set to False when
-// the feature is not requested, so instances that never enabled memory do not
-// grow a permanent condition. When the stack is on, the native memory layers
-// function in every case the operator manages, so the condition is True and the
-// reason reflects vector recall state.
+// condition is only reported for instances that opted into at least one
+// layer: like the McpServersConfigured condition, it is removed rather than
+// set to False when the feature is not requested, so instances that never
+// enabled memory do not grow a permanent condition. When layers are on, they
+// function in every case the operator manages, so the condition is True and
+// the reason reflects vector recall state.
 func setMemoryStackCondition(instance *clawv1alpha1.Claw) {
 	if !memoryStackEnabled(instance) {
 		meta.RemoveStatusCondition(&instance.Status.Conditions, clawv1alpha1.ConditionTypeMemoryStack)
 		return
 	}
+	layers := enabledMemoryLayers(instance)
 
 	// injectMemoryStack backs off entirely when the user selects their own
-	// context engine, so the operator seeds nothing and cannot claim the stack is
-	// applied. Report that explicitly instead of asserting an enabled stack the
+	// context engine, so the operator seeds nothing and cannot claim the layers
+	// are applied. Report that explicitly instead of asserting layers the
 	// operator did not configure. Tuning knobs on the memory-* entries do not
-	// reach here: those still seed, so the stack really is applied.
+	// reach here: those still seed, so the layers really are applied.
 	if userConfiguredMemoryStack(instance) {
 		setCondition(instance, clawv1alpha1.ConditionTypeMemoryStack, metav1.ConditionFalse,
 			clawv1alpha1.ConditionReasonMemoryStackUserManaged,
-			"spec.memory.enabled is true but plugins.slots.contextEngine in spec.config.raw takes "+
-				"precedence; the operator is not managing the memory layers")
+			"spec.memory requests memory layers but plugins.slots.contextEngine in spec.config.raw "+
+				"takes precedence; the operator is not managing the memory layers")
 		return
 	}
 
 	// When the user owns memorySearch via spec.config.raw the operator does not
-	// manage vector recall, so the condition must not assert it is active — the
+	// manage vector recall, so the condition must not assert it is active; the
 	// effective state is whatever the user configured.
 	if userConfiguredMemorySearch(instance) {
 		setCondition(instance, clawv1alpha1.ConditionTypeMemoryStack, metav1.ConditionTrue,
 			clawv1alpha1.ConditionReasonMemoryStackEnabled,
-			"Memory stack enabled; vector recall follows your spec.config.raw memorySearch setting")
+			"Memory layers enabled ("+layers+"); vector recall follows your spec.config.raw memorySearch setting")
 		return
 	}
 
 	if _, ok := firstEmbeddingProvider(instance); ok {
 		setCondition(instance, clawv1alpha1.ConditionTypeMemoryStack, metav1.ConditionTrue,
 			clawv1alpha1.ConditionReasonMemoryStackEnabled,
-			"Memory stack enabled with vector recall")
+			"Memory layers enabled ("+layers+") with vector recall")
 		return
 	}
 	setCondition(instance, clawv1alpha1.ConditionTypeMemoryStack, metav1.ConditionTrue,
 		clawv1alpha1.ConditionReasonMemoryStackNoVectors,
-		"Memory stack enabled without vector recall, no embedding-capable credential")
+		"Memory layers enabled ("+layers+") without vector recall, no embedding-capable credential")
 }

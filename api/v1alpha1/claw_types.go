@@ -399,18 +399,72 @@ type GitHubRepoAccessSpec struct {
 	AllowedRepositories []string `json:"allowedRepositories,omitempty"`
 }
 
-// MemorySpec configures the operator-managed memory stack.
+// MemorySpec configures the OpenClaw memory layers that ship disabled by
+// default. Each layer is independent: enabling one does not enable the
+// other. It does not gate memory-core itself (OpenClaw's default memory
+// plugin, always enabled) or vector recall (auto-configured from an
+// embedding-capable credential independently of this spec).
 type MemorySpec struct {
-	// Enabled turns on the memory layers that OpenClaw ships disabled by
-	// default: memory-core's dreaming consolidation and the memory-wiki
-	// knowledge vault. It does not gate memory-core itself (OpenClaw's
-	// default memory plugin, always enabled) or vector recall
-	// (auto-configured from an embedding-capable credential independently
-	// of this flag). Defaults to false (opt-in); a nil or absent field
-	// means disabled.
+	// Dreaming configures memory-core's dreaming consolidation. Off unless
+	// dreaming.enabled is true.
+	// +optional
+	Dreaming *DreamingSpec `json:"dreaming,omitempty"`
+
+	// Wiki configures the memory-wiki knowledge vault. Off unless
+	// wiki.enabled is true.
+	// +optional
+	Wiki *WikiSpec `json:"wiki,omitempty"`
+}
+
+// DreamingSpec configures memory-core's dreaming consolidation: a managed
+// cron job inside the instance that runs isolated agent turns to promote
+// weighted short-term recalls into MEMORY.md.
+type DreamingSpec struct {
+	// Enabled turns on dreaming. Defaults to false (opt-in); a nil or
+	// absent field means disabled.
 	// +optional
 	// +kubebuilder:default=false
 	Enabled *bool `json:"enabled,omitempty"`
+
+	// Frequency is the cron schedule for dreaming runs. Each run consumes
+	// model tokens independently of user activity, so this is the primary
+	// cost lever. Empty means OpenClaw's default nightly schedule. When
+	// set, it takes precedence over a frequency in spec.config.raw.
+	// +optional
+	Frequency string `json:"frequency,omitempty"`
+
+	// Model routes dreaming turns to a specific model (for example a
+	// cheaper one) instead of the instance's primary model. When set, it
+	// takes precedence over a model in spec.config.raw.
+	// +optional
+	Model string `json:"model,omitempty"`
+}
+
+// WikiMode selects the memory-wiki vault mode.
+// +kubebuilder:validation:Enum=bridge;isolated
+type WikiMode string
+
+const (
+	// WikiModeBridge indexes the active memory plugin's public artifacts
+	// (daily notes, dream reports, memory root) into the wiki vault.
+	WikiModeBridge WikiMode = "bridge"
+	// WikiModeIsolated keeps the wiki vault standalone, without reading
+	// memory plugin artifacts.
+	WikiModeIsolated WikiMode = "isolated"
+)
+
+// WikiSpec configures the memory-wiki knowledge vault.
+type WikiSpec struct {
+	// Enabled turns on memory-wiki. Defaults to false (opt-in); a nil or
+	// absent field means disabled.
+	// +optional
+	// +kubebuilder:default=false
+	Enabled *bool `json:"enabled,omitempty"`
+
+	// Mode selects the vault mode: bridge (the default) or isolated. When
+	// set, it takes precedence over a vaultMode in spec.config.raw.
+	// +optional
+	Mode WikiMode `json:"mode,omitempty"`
 }
 
 // AuthMode selects the gateway authentication mechanism.
@@ -892,8 +946,8 @@ type ClawSpec struct {
 	Plugins []string `json:"plugins,omitempty"`
 
 	// Memory configures the opt-in memory layers (dreaming, memory-wiki)
-	// on top of OpenClaw's always-on memory-core plugin. Disabled by
-	// default. Set spec.memory.enabled: true to activate them.
+	// on top of OpenClaw's always-on memory-core plugin. Each layer is
+	// enabled independently and both default to off.
 	// +optional
 	Memory *MemorySpec `json:"memory,omitempty"`
 
