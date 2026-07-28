@@ -1308,11 +1308,11 @@ spec:
 
 ## Memory Stack
 
-The memory stack is an opt-in bundle for OpenClaw's native memory layers: the memory-wiki knowledge layer and memory-core "dreaming" consolidation, on top of semantic vector recall. It is controlled by `spec.memory` and is off by default, so existing instances are unaffected until you enable it. Semantic vector recall itself is auto-configured from an embedding-capable credential independently of this flag (see [Memory Search](#memory-search)); enabling the stack keeps it on and adds the memory-wiki and dreaming layers on top.
+The memory stack is an opt-in bundle for the two OpenClaw memory layers that ship disabled by default: the memory-wiki knowledge vault and memory-core "dreaming" consolidation. It does not gate the rest of OpenClaw's memory system: memory-core itself is OpenClaw's default memory plugin and is always enabled on every instance, and semantic vector recall is auto-configured from an embedding-capable credential independently of this flag (see [Memory Search](#memory-search)). The stack is controlled by `spec.memory` and is off by default, so existing instances are unaffected until you enable it.
 
 | Field | Default | Effect |
 |-------|---------|--------|
-| `spec.memory.enabled` | `false` | Turns on the native memory stack (memory-wiki, dreaming; keeps vector recall on). |
+| `spec.memory.enabled` | `false` | Enables dreaming and memory-wiki (both off by default upstream); keeps vector recall on. Does not affect memory-core itself, which is always enabled. |
 
 ### Enabling the memory stack
 

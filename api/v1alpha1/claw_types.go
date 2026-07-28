@@ -399,12 +399,15 @@ type GitHubRepoAccessSpec struct {
 	AllowedRepositories []string `json:"allowedRepositories,omitempty"`
 }
 
-// MemorySpec configures the operator-managed memory/context stack.
+// MemorySpec configures the operator-managed memory stack.
 type MemorySpec struct {
-	// Enabled controls the memory/context stack. Defaults to false (opt-in).
-	// Set spec.memory.enabled: true to turn on the memory/context stack
-	// (native vectors, memory-wiki, dreaming). A nil or absent field means
-	// disabled.
+	// Enabled turns on the memory layers that OpenClaw ships disabled by
+	// default: memory-core's dreaming consolidation and the memory-wiki
+	// knowledge vault. It does not gate memory-core itself (OpenClaw's
+	// default memory plugin, always enabled) or vector recall
+	// (auto-configured from an embedding-capable credential independently
+	// of this flag). Defaults to false (opt-in); a nil or absent field
+	// means disabled.
 	// +optional
 	// +kubebuilder:default=false
 	Enabled *bool `json:"enabled,omitempty"`
@@ -879,9 +882,9 @@ type ClawSpec struct {
 	// +optional
 	Plugins []string `json:"plugins,omitempty"`
 
-	// Memory configures the operator-managed memory/context stack (vector
-	// recall, memory-wiki, dreaming). Disabled by default (opt-in).
-	// Set spec.memory.enabled: true to activate the stack.
+	// Memory configures the opt-in memory layers (dreaming, memory-wiki)
+	// on top of OpenClaw's always-on memory-core plugin. Disabled by
+	// default. Set spec.memory.enabled: true to activate them.
 	// +optional
 	Memory *MemorySpec `json:"memory,omitempty"`
 
