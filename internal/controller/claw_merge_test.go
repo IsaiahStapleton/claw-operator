@@ -629,6 +629,116 @@ func TestMergeJS(t *testing.T) {
 		assert.Equal(t, "# Runtime Edited Deployment Skill\n", string(deploymentSkillBytes))
 	})
 
+	t.Run("merge mode records managed runtime state", func(t *testing.T) {
+		operatorJSON := `{
+			"gateway": { "port": 18789 },
+			"plugins": { "entries": { "memory-wiki": { "enabled": true } } }
+		}`
+
+		result := runMergeJS(t, mergeTestSetup{operatorJSON: operatorJSON})
+
+		stateBytes, err := os.ReadFile(filepath.Join(result.pvcDir, ".operator", "managed-runtime-config.json"))
+		require.NoError(t, err, "merge mode must record managed runtime state, or later removals can never prune")
+		var state map[string]any
+		require.NoError(t, json.Unmarshal(stateBytes, &state))
+		entries := state["entries"].(map[string]any)
+		assert.ElementsMatch(t, []any{"memory-wiki"}, entries["plugins.entries"])
+	})
+
+	t.Run("merge restart prunes previously operator-managed plugin entries removed from operator.json", func(t *testing.T) {
+		// The disable path for spec.memory layers: an entry the operator seeded
+		// on an earlier reconcile disappears from operator.json when its layer
+		// is disabled, and the PVC copy must go with it or the layer keeps
+		// running forever.
+		operatorJSON := `{
+			"gateway": { "port": 18789 },
+			"plugins": { "entries": { "memory-wiki": { "enabled": true } } }
+		}`
+		pvcJSON := `{
+			"plugins": { "entries": {
+				"memory-core": { "config": { "dreaming": { "enabled": true, "frequency": "0 4 * * *" } } },
+				"memory-wiki": { "enabled": true },
+				"custom-plugin": { "enabled": true }
+			} },
+			"agents": { "defaults": { "workspace": "~/.openclaw/workspace" } }
+		}`
+		previousState := `{
+			"version": 1,
+			"entries": {
+				"models.providers": [],
+				"agents.defaults.models": [],
+				"channels": [],
+				"plugins.entries": ["memory-core", "memory-wiki"]
+			}
+		}`
+
+		result := runMergeJS(t, mergeTestSetup{
+			operatorJSON: operatorJSON,
+			pvcJSON:      pvcJSON,
+			pvcFiles: map[string]string{
+				".operator/managed-runtime-config.json": previousState,
+			},
+		})
+
+		_, hasCore := nestedValue(result.config, "plugins.entries.memory-core")
+		assert.False(t, hasCore, "operator-managed entry removed from operator.json must be pruned")
+		_, hasWiki := nestedValue(result.config, "plugins.entries.memory-wiki")
+		assert.True(t, hasWiki, "still-declared operator-managed entry must remain")
+		_, hasCustom := nestedValue(result.config, "plugins.entries.custom-plugin")
+		assert.True(t, hasCustom, "user-added entry never claimed by the operator must be preserved")
+
+		stateBytes, err := os.ReadFile(filepath.Join(result.pvcDir, ".operator", "managed-runtime-config.json"))
+		require.NoError(t, err)
+		var state map[string]any
+		require.NoError(t, json.Unmarshal(stateBytes, &state))
+		entries := state["entries"].(map[string]any)
+		assert.ElementsMatch(t, []any{"memory-wiki"}, entries["plugins.entries"],
+			"state must be rewritten to the currently declared keys")
+	})
+
+	t.Run("merge restart prune replaces a model selection pointing at a pruned model", func(t *testing.T) {
+		operatorJSON := `{
+			"gateway": { "port": 18789 },
+			"agents": { "defaults": { "model": { "primary": "openai/gpt-5.5" }, "models": {
+				"openai/gpt-5.5": { "alias": "GPT-5.5" }
+			} } }
+		}`
+		pvcJSON := `{
+			"agents": { "defaults": { "model": { "primary": "google/gemini-3.5-flash" }, "models": {
+				"google/gemini-3.5-flash": { "alias": "Gemini Flash" },
+				"openai/gpt-5.5": { "alias": "GPT-5.5" }
+			} } }
+		}`
+		previousState := `{
+			"version": 1,
+			"entries": {
+				"models.providers": [],
+				"agents.defaults.models": ["google/gemini-3.5-flash", "openai/gpt-5.5"],
+				"channels": [],
+				"plugins.entries": []
+			}
+		}`
+
+		result := runMergeJS(t, mergeTestSetup{
+			operatorJSON: operatorJSON,
+			pvcJSON:      pvcJSON,
+			pvcFiles: map[string]string{
+				".operator/managed-runtime-config.json": previousState,
+			},
+		})
+
+		models, hasModels := nestedValue(result.config, "agents.defaults.models")
+		require.True(t, hasModels)
+		modelsMap := models.(map[string]any)
+		assert.NotContains(t, modelsMap, "google/gemini-3.5-flash", "catalog model removed from the CR should be pruned")
+		assert.Contains(t, modelsMap, "openai/gpt-5.5")
+
+		primary, hasPrimary := nestedValue(result.config, "agents.defaults.model.primary")
+		require.True(t, hasPrimary)
+		assert.Equal(t, "openai/gpt-5.5", primary,
+			"a preserved primary pointing at a pruned model must fall back to the operator's primary")
+	})
+
 	t.Run("operator keys win on conflict", func(t *testing.T) {
 		pvcJSON := `{
 			"gateway": { "port": 9999, "mode": "local" },

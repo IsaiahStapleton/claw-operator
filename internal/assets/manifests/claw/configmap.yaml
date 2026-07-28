@@ -558,6 +558,13 @@ data:
       }
       const savedPrimary = base?.agents?.defaults?.model?.primary;
       const savedFallbacks = base?.agents?.defaults?.model?.fallbacks;
+      // Deep-merge never removes keys, so operator-managed entries that left
+      // operator.json (a disabled memory layer, a removed channel credential)
+      // would linger on the PVC forever. Track what the operator declared last
+      // run and prune what it no longer declares. In merge mode operator keys
+      // win outright, so every key under a managed path in ops is claimed.
+      const previousState = readManagedRuntimeState();
+      const nextState = managedRuntimeState(ops);
       const merged = mergeConfigs(base, ops);
       if (savedPrimary || savedFallbacks) {
         merged.agents = merged.agents || {};
@@ -570,11 +577,14 @@ data:
           merged.agents.defaults.model.fallbacks = savedFallbacks;
         }
       }
+      const removedModels = pruneManagedRuntimeEntries(merged, previousState, nextState);
+      pruneRemovedModelSelections(merged, ops, removedModels);
       fs.writeFileSync(pvcPath, JSON.stringify(merged, null, 2), { mode: 0o600 });
+      writeManagedRuntimeState(nextState);
       console.log("[init-config] merged operator.json into existing openclaw.json");
     } else {
       fs.writeFileSync(pvcPath, JSON.stringify(mergeConfigs(seedConfig, ops), null, 2), { mode: 0o600 });
-      if (management === "user") writeManagedRuntimeState(managedRuntimeState(ops));
+      writeManagedRuntimeState(managedRuntimeState(ops));
       console.log(`[init-config] wrote openclaw.json (mode=${mode}, first_run=${!fs.existsSync(pvcPath)})`);
     }
 
