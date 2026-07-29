@@ -86,6 +86,7 @@ const (
 	ConditionTypeRestrictionsEnforced = "RestrictionsEnforced"
 	ConditionTypePluginCompatibility  = "PluginCompatibility"
 	ConditionTypeVersionDowngrade     = "VersionDowngrade"
+	ConditionTypeMemoryStack          = "MemoryStack"
 )
 
 // Annotation keys used on pod templates to trigger rollouts on config changes.
@@ -101,17 +102,20 @@ const (
 
 // Condition reasons for Claw status.
 const (
-	ConditionReasonReady                = "Ready"
-	ConditionReasonProvisioning         = "Provisioning"
-	ConditionReasonResolved             = "Resolved"
-	ConditionReasonValidationFailed     = "ValidationFailed"
-	ConditionReasonConfigured           = "Configured"
-	ConditionReasonConfigFailed         = "ConfigFailed"
-	ConditionReasonIdle                 = "Idle"
-	ConditionReasonIdledByRequest       = "IdledByRequest"
-	ConditionReasonIncompatible         = "Incompatible"
-	ConditionReasonVersionDowngrade     = "VersionDowngrade"
-	ConditionReasonInitContainerFailure = "InitContainerFailure"
+	ConditionReasonReady                  = "Ready"
+	ConditionReasonProvisioning           = "Provisioning"
+	ConditionReasonResolved               = "Resolved"
+	ConditionReasonValidationFailed       = "ValidationFailed"
+	ConditionReasonConfigured             = "Configured"
+	ConditionReasonConfigFailed           = "ConfigFailed"
+	ConditionReasonIdle                   = "Idle"
+	ConditionReasonIdledByRequest         = "IdledByRequest"
+	ConditionReasonIncompatible           = "Incompatible"
+	ConditionReasonVersionDowngrade       = "VersionDowngrade"
+	ConditionReasonInitContainerFailure   = "InitContainerFailure"
+	ConditionReasonMemoryStackEnabled     = "Enabled"
+	ConditionReasonMemoryStackNoVectors   = "EnabledNoVectors"
+	ConditionReasonMemoryStackUserManaged = "UserManaged"
 )
 
 // SecretRefEntry references a specific key in a Secret.
@@ -393,6 +397,20 @@ type GitHubRepoAccessSpec struct {
 	// If empty, all github.com paths are allowed.
 	// +optional
 	AllowedRepositories []string `json:"allowedRepositories,omitempty"`
+}
+
+// MemorySpec configures the operator-managed memory stack.
+type MemorySpec struct {
+	// Enabled turns on the memory layers that OpenClaw ships disabled by
+	// default: memory-core's dreaming consolidation and the memory-wiki
+	// knowledge vault. It does not gate memory-core itself (OpenClaw's
+	// default memory plugin, always enabled) or vector recall
+	// (auto-configured from an embedding-capable credential independently
+	// of this flag). Defaults to false (opt-in); a nil or absent field
+	// means disabled.
+	// +optional
+	// +kubebuilder:default=false
+	Enabled *bool `json:"enabled,omitempty"`
 }
 
 // AuthMode selects the gateway authentication mechanism.
@@ -867,11 +885,17 @@ type ClawSpec struct {
 	// +optional
 	Network *NetworkSpec `json:"network,omitempty"`
 
-	// Plugins lists OpenClaw plugins to install via an init container before
-	// the gateway starts. Each entry is a package name (e.g. "@openclaw/matrix").
-	// The operator runs `openclaw plugins install clawhub:<pkg>` for each entry.
+	// Plugins lists OpenClaw plugins to install from clawhub via an init
+	// container before the gateway starts (e.g. "@openclaw/matrix" runs
+	// `openclaw plugins install clawhub:@openclaw/matrix`).
 	// +optional
 	Plugins []string `json:"plugins,omitempty"`
+
+	// Memory configures the opt-in memory layers (dreaming, memory-wiki)
+	// on top of OpenClaw's always-on memory-core plugin. Disabled by
+	// default. Set spec.memory.enabled: true to activate them.
+	// +optional
+	Memory *MemorySpec `json:"memory,omitempty"`
 
 	// Workspace configures workspace file seeding and bootstrap behavior.
 	// Files are seeded once (seedIfMissing) — user edits are preserved.

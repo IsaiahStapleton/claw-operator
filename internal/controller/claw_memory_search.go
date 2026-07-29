@@ -37,27 +37,35 @@ func userHasMemorySearchConfig(config map[string]any) bool {
 	return ok
 }
 
+// firstEmbeddingProvider returns the OpenClaw memory-search adapter for the
+// first embedding-capable credential. GCP credentials (Vertex AI) are skipped.
+// ok is false when none is eligible.
+func firstEmbeddingProvider(instance *clawv1alpha1.Claw) (adapter string, ok bool) {
+	for _, cred := range instance.Spec.Credentials {
+		if cred.Type == clawv1alpha1.CredentialTypeGCP {
+			continue
+		}
+		if defaults, found := knownProviders[cred.Provider]; found && defaults.EmbeddingAdapter != "" {
+			return defaults.EmbeddingAdapter, true
+		}
+	}
+	return "", false
+}
+
 // injectMemorySearch auto-configures agents.defaults.memorySearch based on
 // the first embedding-capable credential. GCP credentials (Vertex AI) are
 // skipped because the gemini adapter expects API key auth, not OAuth2 tokens.
 // If no eligible provider is found, memory search is explicitly disabled to
 // suppress noisy runtime errors. User-provided memorySearch config in
-// spec.config.raw takes full precedence — the operator never overrides it.
+// spec.config.raw takes full precedence; the operator never overrides it.
 func injectMemorySearch(config map[string]any, instance *clawv1alpha1.Claw) {
 	if userHasMemorySearchConfig(config) {
 		return
 	}
 
-	for _, cred := range instance.Spec.Credentials {
-		if cred.Type == clawv1alpha1.CredentialTypeGCP {
-			continue
-		}
-		if defaults, ok := knownProviders[cred.Provider]; ok && defaults.EmbeddingAdapter != "" {
-			setNestedValue(config, defaults.EmbeddingAdapter,
-				"agents", "defaults", "memorySearch", "provider")
-			return
-		}
+	if adapter, ok := firstEmbeddingProvider(instance); ok {
+		setNestedValue(config, adapter, "agents", "defaults", "memorySearch", "provider")
+		return
 	}
-
 	setNestedValue(config, false, "agents", "defaults", "memorySearch", "enabled")
 }
