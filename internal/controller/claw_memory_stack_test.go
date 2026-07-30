@@ -32,20 +32,51 @@ import (
 	clawv1alpha1 "github.com/codeready-toolchain/claw-operator/api/v1alpha1"
 )
 
-func TestMemoryStackEnabled(t *testing.T) {
-	t.Run("nil memory spec defaults to disabled", func(t *testing.T) {
-		assert.False(t, memoryStackEnabled(&clawv1alpha1.Claw{}))
-	})
-	t.Run("nil enabled pointer defaults to disabled", func(t *testing.T) {
-		instance := &clawv1alpha1.Claw{Spec: clawv1alpha1.ClawSpec{Memory: &clawv1alpha1.MemorySpec{}}}
+func memoryBoth() *clawv1alpha1.MemorySpec {
+	return &clawv1alpha1.MemorySpec{
+		Dreaming: &clawv1alpha1.DreamingSpec{Enabled: ptr.To(true)},
+		Wiki:     &clawv1alpha1.WikiSpec{Enabled: ptr.To(true)},
+	}
+}
+
+func memoryOff() *clawv1alpha1.MemorySpec {
+	return &clawv1alpha1.MemorySpec{
+		Dreaming: &clawv1alpha1.DreamingSpec{Enabled: ptr.To(false)},
+		Wiki:     &clawv1alpha1.WikiSpec{Enabled: ptr.To(false)},
+	}
+}
+
+func TestMemoryLayerToggles(t *testing.T) {
+	t.Run("nil memory spec disables every layer", func(t *testing.T) {
+		instance := &clawv1alpha1.Claw{}
+		assert.False(t, dreamingEnabled(instance))
+		assert.False(t, wikiEnabled(instance))
 		assert.False(t, memoryStackEnabled(instance))
 	})
-	t.Run("explicit true is enabled", func(t *testing.T) {
-		instance := &clawv1alpha1.Claw{Spec: clawv1alpha1.ClawSpec{Memory: &clawv1alpha1.MemorySpec{Enabled: ptr.To(true)}}}
+	t.Run("empty memory spec disables every layer", func(t *testing.T) {
+		instance := &clawv1alpha1.Claw{Spec: clawv1alpha1.ClawSpec{Memory: &clawv1alpha1.MemorySpec{}}}
+		assert.False(t, dreamingEnabled(instance))
+		assert.False(t, wikiEnabled(instance))
+		assert.False(t, memoryStackEnabled(instance))
+	})
+	t.Run("dreaming alone does not enable wiki", func(t *testing.T) {
+		instance := &clawv1alpha1.Claw{Spec: clawv1alpha1.ClawSpec{Memory: &clawv1alpha1.MemorySpec{
+			Dreaming: &clawv1alpha1.DreamingSpec{Enabled: ptr.To(true)},
+		}}}
+		assert.True(t, dreamingEnabled(instance))
+		assert.False(t, wikiEnabled(instance))
 		assert.True(t, memoryStackEnabled(instance))
 	})
-	t.Run("explicit false opts out", func(t *testing.T) {
-		instance := &clawv1alpha1.Claw{Spec: clawv1alpha1.ClawSpec{Memory: &clawv1alpha1.MemorySpec{Enabled: ptr.To(false)}}}
+	t.Run("wiki alone does not enable dreaming", func(t *testing.T) {
+		instance := &clawv1alpha1.Claw{Spec: clawv1alpha1.ClawSpec{Memory: &clawv1alpha1.MemorySpec{
+			Wiki: &clawv1alpha1.WikiSpec{Enabled: ptr.To(true)},
+		}}}
+		assert.False(t, dreamingEnabled(instance))
+		assert.True(t, wikiEnabled(instance))
+		assert.True(t, memoryStackEnabled(instance))
+	})
+	t.Run("explicit false on both layers opts out", func(t *testing.T) {
+		instance := &clawv1alpha1.Claw{Spec: clawv1alpha1.ClawSpec{Memory: memoryOff()}}
 		assert.False(t, memoryStackEnabled(instance))
 	})
 }
@@ -58,10 +89,10 @@ func memEntries(config map[string]any) map[string]any {
 }
 
 func TestInjectMemoryStack(t *testing.T) {
-	t.Run("openai credential enables vectors and seeds native layers", func(t *testing.T) {
+	t.Run("openai credential enables vectors and seeds both layers", func(t *testing.T) {
 		config := map[string]any{}
 		instance := &clawv1alpha1.Claw{Spec: clawv1alpha1.ClawSpec{
-			Memory: &clawv1alpha1.MemorySpec{Enabled: ptr.To(true)},
+			Memory: memoryBoth(),
 			Credentials: []clawv1alpha1.CredentialSpec{
 				{Name: "openai", Type: clawv1alpha1.CredentialTypeAPIKey, Provider: "openai"},
 			},
@@ -87,10 +118,112 @@ func TestInjectMemoryStack(t *testing.T) {
 		assert.False(t, hasSlots, "the native stack must not select a context engine")
 	})
 
-	t.Run("no embedding credential leaves vectors off but seeds the rest", func(t *testing.T) {
+	t.Run("dreaming alone seeds no wiki entry", func(t *testing.T) {
+		config := map[string]any{}
+		instance := &clawv1alpha1.Claw{Spec: clawv1alpha1.ClawSpec{Memory: &clawv1alpha1.MemorySpec{
+			Dreaming: &clawv1alpha1.DreamingSpec{Enabled: ptr.To(true)},
+		}}}
+		injectMemoryStack(config, instance, false)
+		entries := memEntries(config)
+		assert.Equal(t, true, entries["memory-core"].(map[string]any)["config"].(map[string]any)["dreaming"].(map[string]any)["enabled"])
+		_, hasWiki := entries["memory-wiki"]
+		assert.False(t, hasWiki, "wiki must not seed when only dreaming is enabled")
+	})
+
+	t.Run("wiki alone seeds no memory-core entry", func(t *testing.T) {
+		config := map[string]any{}
+		instance := &clawv1alpha1.Claw{Spec: clawv1alpha1.ClawSpec{Memory: &clawv1alpha1.MemorySpec{
+			Wiki: &clawv1alpha1.WikiSpec{Enabled: ptr.To(true)},
+		}}}
+		injectMemoryStack(config, instance, false)
+		entries := memEntries(config)
+		assert.Equal(t, true, entries["memory-wiki"].(map[string]any)["enabled"])
+		_, hasCore := entries["memory-core"]
+		assert.False(t, hasCore, "dreaming must not seed when only wiki is enabled")
+	})
+
+	t.Run("wiki isolated mode skips the bridge block", func(t *testing.T) {
+		config := map[string]any{}
+		instance := &clawv1alpha1.Claw{Spec: clawv1alpha1.ClawSpec{Memory: &clawv1alpha1.MemorySpec{
+			Wiki: &clawv1alpha1.WikiSpec{Enabled: ptr.To(true), Mode: clawv1alpha1.WikiModeIsolated},
+		}}}
+		injectMemoryStack(config, instance, false)
+		wcfg := memEntries(config)["memory-wiki"].(map[string]any)["config"].(map[string]any)
+		assert.Equal(t, "isolated", wcfg["vaultMode"])
+		_, hasBridge := wcfg["bridge"]
+		assert.False(t, hasBridge, "bridge indexing config must not seed in isolated mode")
+	})
+
+	t.Run("explicit wiki mode overrides a raw vaultMode", func(t *testing.T) {
+		config := map[string]any{
+			"plugins": map[string]any{"entries": map[string]any{
+				"memory-wiki": map[string]any{"config": map[string]any{"vaultMode": "isolated"}},
+			}},
+		}
+		instance := &clawv1alpha1.Claw{Spec: clawv1alpha1.ClawSpec{Memory: &clawv1alpha1.MemorySpec{
+			Wiki: &clawv1alpha1.WikiSpec{Enabled: ptr.To(true), Mode: clawv1alpha1.WikiModeBridge},
+		}}}
+		injectMemoryStack(config, instance, false)
+		wcfg := memEntries(config)["memory-wiki"].(map[string]any)["config"].(map[string]any)
+		assert.Equal(t, "bridge", wcfg["vaultMode"], "an explicit CRD mode is operator-managed and wins over raw")
+		_, hasBridge := wcfg["bridge"]
+		assert.True(t, hasBridge, "bridge indexing config seeds when the effective mode is bridge")
+	})
+
+	t.Run("unset wiki mode defers to a raw vaultMode", func(t *testing.T) {
+		config := map[string]any{
+			"plugins": map[string]any{"entries": map[string]any{
+				"memory-wiki": map[string]any{"config": map[string]any{"vaultMode": "isolated"}},
+			}},
+		}
+		instance := &clawv1alpha1.Claw{Spec: clawv1alpha1.ClawSpec{Memory: &clawv1alpha1.MemorySpec{
+			Wiki: &clawv1alpha1.WikiSpec{Enabled: ptr.To(true)},
+		}}}
+		injectMemoryStack(config, instance, false)
+		wcfg := memEntries(config)["memory-wiki"].(map[string]any)["config"].(map[string]any)
+		assert.Equal(t, "isolated", wcfg["vaultMode"], "no CRD mode set, the raw value survives")
+		_, hasBridge := wcfg["bridge"]
+		assert.False(t, hasBridge, "bridge indexing config must not seed when the effective mode is isolated")
+	})
+
+	t.Run("dreaming frequency and model from the CRD override raw values", func(t *testing.T) {
+		config := map[string]any{
+			"plugins": map[string]any{"entries": map[string]any{
+				"memory-core": map[string]any{"config": map[string]any{"dreaming": map[string]any{
+					"frequency": "0 1 * * *",
+				}}},
+			}},
+		}
+		instance := &clawv1alpha1.Claw{Spec: clawv1alpha1.ClawSpec{Memory: &clawv1alpha1.MemorySpec{
+			Dreaming: &clawv1alpha1.DreamingSpec{
+				Enabled:   ptr.To(true),
+				Frequency: "0 5 * * *",
+				Model:     "openai/gpt-5.6",
+			},
+		}}}
+		injectMemoryStack(config, instance, false)
+		dreaming := memEntries(config)["memory-core"].(map[string]any)["config"].(map[string]any)["dreaming"].(map[string]any)
+		assert.Equal(t, "0 5 * * *", dreaming["frequency"], "an explicit CRD frequency is operator-managed and wins over raw")
+		assert.Equal(t, "openai/gpt-5.6", dreaming["model"])
+	})
+
+	t.Run("unset dreaming frequency and model seed nothing", func(t *testing.T) {
+		config := map[string]any{}
+		instance := &clawv1alpha1.Claw{Spec: clawv1alpha1.ClawSpec{Memory: &clawv1alpha1.MemorySpec{
+			Dreaming: &clawv1alpha1.DreamingSpec{Enabled: ptr.To(true)},
+		}}}
+		injectMemoryStack(config, instance, false)
+		dreaming := memEntries(config)["memory-core"].(map[string]any)["config"].(map[string]any)["dreaming"].(map[string]any)
+		_, hasFrequency := dreaming["frequency"]
+		_, hasModel := dreaming["model"]
+		assert.False(t, hasFrequency, "upstream default schedule applies when the CRD field is unset")
+		assert.False(t, hasModel, "the instance's primary model applies when the CRD field is unset")
+	})
+
+	t.Run("no embedding credential leaves vectors off but seeds the layers", func(t *testing.T) {
 		config := map[string]any{}
 		instance := &clawv1alpha1.Claw{Spec: clawv1alpha1.ClawSpec{
-			Memory: &clawv1alpha1.MemorySpec{Enabled: ptr.To(true)},
+			Memory: memoryBoth(),
 			Credentials: []clawv1alpha1.CredentialSpec{
 				{Name: "claude", Type: clawv1alpha1.CredentialTypeAPIKey, Provider: "anthropic"},
 			},
@@ -103,9 +236,9 @@ func TestInjectMemoryStack(t *testing.T) {
 		assert.Equal(t, true, entries["memory-wiki"].(map[string]any)["enabled"])
 	})
 
-	t.Run("skips entirely when disabled", func(t *testing.T) {
+	t.Run("skips entirely when every layer is off", func(t *testing.T) {
 		config := map[string]any{}
-		instance := &clawv1alpha1.Claw{Spec: clawv1alpha1.ClawSpec{Memory: &clawv1alpha1.MemorySpec{Enabled: ptr.To(false)}}}
+		instance := &clawv1alpha1.Claw{Spec: clawv1alpha1.ClawSpec{Memory: memoryOff()}}
 		injectMemoryStack(config, instance, false)
 		_, hasPlugins := config["plugins"]
 		assert.False(t, hasPlugins)
@@ -114,7 +247,7 @@ func TestInjectMemoryStack(t *testing.T) {
 	t.Run("seeds native layers even when plugin installation disabled", func(t *testing.T) {
 		config := map[string]any{}
 		instance := &clawv1alpha1.Claw{Spec: clawv1alpha1.ClawSpec{
-			Memory:       &clawv1alpha1.MemorySpec{Enabled: ptr.To(true)},
+			Memory:       memoryBoth(),
 			Restrictions: &clawv1alpha1.RestrictionsSpec{PluginInstallation: ptr.To(false)},
 		}}
 		injectMemoryStack(config, instance, false)
@@ -127,9 +260,7 @@ func TestInjectMemoryStack(t *testing.T) {
 		config := map[string]any{
 			"plugins": map[string]any{"entries": map[string]any{"memory-wiki": map[string]any{"enabled": false}}},
 		}
-		instance := &clawv1alpha1.Claw{Spec: clawv1alpha1.ClawSpec{
-			Memory: &clawv1alpha1.MemorySpec{Enabled: ptr.To(true)},
-		}}
+		instance := &clawv1alpha1.Claw{Spec: clawv1alpha1.ClawSpec{Memory: memoryBoth()}}
 		injectMemoryStack(config, instance, false)
 		entries := config["plugins"].(map[string]any)["entries"].(map[string]any)
 		assert.Equal(t, false, entries["memory-wiki"].(map[string]any)["enabled"], "user value preserved")
@@ -145,9 +276,7 @@ func TestInjectMemoryStack(t *testing.T) {
 				}}},
 			}},
 		}
-		instance := &clawv1alpha1.Claw{Spec: clawv1alpha1.ClawSpec{
-			Memory: &clawv1alpha1.MemorySpec{Enabled: ptr.To(true)},
-		}}
+		instance := &clawv1alpha1.Claw{Spec: clawv1alpha1.ClawSpec{Memory: memoryBoth()}}
 		injectMemoryStack(config, instance, false)
 		entries := config["plugins"].(map[string]any)["entries"].(map[string]any)
 		dreaming := entries["memory-core"].(map[string]any)["config"].(map[string]any)["dreaming"].(map[string]any)
@@ -164,7 +293,7 @@ func TestInjectMemoryStack(t *testing.T) {
 			"plugins": map[string]any{"slots": map[string]any{"contextEngine": "custom-engine"}},
 		}
 		instance := &clawv1alpha1.Claw{Spec: clawv1alpha1.ClawSpec{
-			Memory: &clawv1alpha1.MemorySpec{Enabled: ptr.To(true)},
+			Memory: memoryBoth(),
 			Credentials: []clawv1alpha1.CredentialSpec{
 				{Name: "openai", Type: clawv1alpha1.CredentialTypeAPIKey, Provider: "openai"},
 			},
@@ -185,7 +314,7 @@ func TestInjectMemoryStack(t *testing.T) {
 			},
 		}
 		instance := &clawv1alpha1.Claw{Spec: clawv1alpha1.ClawSpec{
-			Memory: &clawv1alpha1.MemorySpec{Enabled: ptr.To(true)},
+			Memory: memoryBoth(),
 			Credentials: []clawv1alpha1.CredentialSpec{
 				{Name: "openai", Type: clawv1alpha1.CredentialTypeAPIKey, Provider: "openai"},
 			},
@@ -210,7 +339,7 @@ func TestInjectMemoryStack(t *testing.T) {
 	t.Run("stack repairs a stale memorySearch.enabled:false once a credential exists", func(t *testing.T) {
 		config := map[string]any{}
 		instance := &clawv1alpha1.Claw{Spec: clawv1alpha1.ClawSpec{
-			Memory: &clawv1alpha1.MemorySpec{Enabled: ptr.To(true)},
+			Memory: memoryBoth(),
 			Credentials: []clawv1alpha1.CredentialSpec{
 				{Name: "openai", Type: clawv1alpha1.CredentialTypeAPIKey, Provider: "openai"},
 			},
@@ -230,6 +359,20 @@ func TestInjectMemoryStack(t *testing.T) {
 		assert.Equal(t, true, memSearch(config)["enabled"],
 			"the stack must write enabled:true so merge.js overwrites a stale false on the PVC")
 	})
+
+	t.Run("the repair fires for a wiki-only instance too", func(t *testing.T) {
+		// Vector recall is layer-independent, so a single enabled layer is enough
+		// to repair a stale memorySearch.enabled:false.
+		config := map[string]any{}
+		instance := &clawv1alpha1.Claw{Spec: clawv1alpha1.ClawSpec{
+			Memory: &clawv1alpha1.MemorySpec{Wiki: &clawv1alpha1.WikiSpec{Enabled: ptr.To(true)}},
+			Credentials: []clawv1alpha1.CredentialSpec{
+				{Name: "openai", Type: clawv1alpha1.CredentialTypeAPIKey, Provider: "openai"},
+			},
+		}}
+		injectMemoryStack(config, instance, false)
+		assert.Equal(t, true, memSearch(config)["enabled"])
+	})
 }
 
 func TestSetMemoryStackCondition(t *testing.T) {
@@ -239,30 +382,44 @@ func TestSetMemoryStackCondition(t *testing.T) {
 	openaiCreds := []clawv1alpha1.CredentialSpec{{Name: "openai", Type: clawv1alpha1.CredentialTypeAPIKey, Provider: "openai"}}
 
 	t.Run("disabled reports no condition", func(t *testing.T) {
-		instance := &clawv1alpha1.Claw{Spec: clawv1alpha1.ClawSpec{Memory: &clawv1alpha1.MemorySpec{Enabled: ptr.To(false)}}}
+		instance := &clawv1alpha1.Claw{Spec: clawv1alpha1.ClawSpec{Memory: memoryOff()}}
 		setMemoryStackCondition(instance)
 		assert.Nil(t, cond(instance), "opted-out instances must not carry a MemoryStack condition")
 	})
 	t.Run("disabling removes a previously set condition", func(t *testing.T) {
-		instance := &clawv1alpha1.Claw{Spec: clawv1alpha1.ClawSpec{Memory: &clawv1alpha1.MemorySpec{Enabled: ptr.To(true)}, Credentials: openaiCreds}}
+		instance := &clawv1alpha1.Claw{Spec: clawv1alpha1.ClawSpec{Memory: memoryBoth(), Credentials: openaiCreds}}
 		setMemoryStackCondition(instance)
 		require.NotNil(t, cond(instance))
 
-		instance.Spec.Memory.Enabled = ptr.To(false)
+		instance.Spec.Memory = memoryOff()
 		setMemoryStackCondition(instance)
 		assert.Nil(t, cond(instance))
 	})
-	t.Run("enabled with vectors", func(t *testing.T) {
-		instance := &clawv1alpha1.Claw{Spec: clawv1alpha1.ClawSpec{Memory: &clawv1alpha1.MemorySpec{Enabled: ptr.To(true)}, Credentials: openaiCreds}}
+	t.Run("enabled with vectors names both layers", func(t *testing.T) {
+		instance := &clawv1alpha1.Claw{Spec: clawv1alpha1.ClawSpec{Memory: memoryBoth(), Credentials: openaiCreds}}
 		setMemoryStackCondition(instance)
 		c := cond(instance)
 		require.NotNil(t, c)
 		assert.Equal(t, metav1.ConditionTrue, c.Status)
 		assert.Equal(t, clawv1alpha1.ConditionReasonMemoryStackEnabled, c.Reason)
 		assert.Contains(t, c.Message, "vector recall")
+		assert.Contains(t, c.Message, "dreaming")
+		assert.Contains(t, c.Message, "wiki")
+	})
+	t.Run("wiki-only condition does not claim dreaming", func(t *testing.T) {
+		instance := &clawv1alpha1.Claw{Spec: clawv1alpha1.ClawSpec{
+			Memory:      &clawv1alpha1.MemorySpec{Wiki: &clawv1alpha1.WikiSpec{Enabled: ptr.To(true)}},
+			Credentials: openaiCreds,
+		}}
+		setMemoryStackCondition(instance)
+		c := cond(instance)
+		require.NotNil(t, c)
+		assert.Equal(t, metav1.ConditionTrue, c.Status)
+		assert.Contains(t, c.Message, "wiki")
+		assert.NotContains(t, c.Message, "dreaming")
 	})
 	t.Run("enabled without embedding credential", func(t *testing.T) {
-		instance := &clawv1alpha1.Claw{Spec: clawv1alpha1.ClawSpec{Memory: &clawv1alpha1.MemorySpec{Enabled: ptr.To(true)}, Credentials: []clawv1alpha1.CredentialSpec{{Name: "c", Type: clawv1alpha1.CredentialTypeAPIKey, Provider: "anthropic"}}}}
+		instance := &clawv1alpha1.Claw{Spec: clawv1alpha1.ClawSpec{Memory: memoryBoth(), Credentials: []clawv1alpha1.CredentialSpec{{Name: "c", Type: clawv1alpha1.CredentialTypeAPIKey, Provider: "anthropic"}}}}
 		setMemoryStackCondition(instance)
 		c := cond(instance)
 		require.NotNil(t, c)
@@ -274,7 +431,7 @@ func TestSetMemoryStackCondition(t *testing.T) {
 		// the condition must not report a stack the operator never seeded.
 		instance := &clawv1alpha1.Claw{Spec: clawv1alpha1.ClawSpec{
 			Credentials: openaiCreds,
-			Memory:      &clawv1alpha1.MemorySpec{Enabled: ptr.To(true)},
+			Memory:      memoryBoth(),
 			Config: &clawv1alpha1.ConfigSpec{
 				Raw: &clawv1alpha1.RawConfig{
 					RawExtension: runtime.RawExtension{Raw: []byte(`{"plugins":{"slots":{"contextEngine":"custom"}}}`)},
@@ -293,7 +450,7 @@ func TestSetMemoryStackCondition(t *testing.T) {
 		// still owns the layers), so the condition must not claim UserManaged.
 		instance := &clawv1alpha1.Claw{Spec: clawv1alpha1.ClawSpec{
 			Credentials: openaiCreds,
-			Memory:      &clawv1alpha1.MemorySpec{Enabled: ptr.To(true)},
+			Memory:      memoryBoth(),
 			Config: &clawv1alpha1.ConfigSpec{
 				Raw: &clawv1alpha1.RawConfig{
 					RawExtension: runtime.RawExtension{
@@ -314,7 +471,7 @@ func TestSetMemoryStackCondition(t *testing.T) {
 		// condition must not assert "with vector recall".
 		instance := &clawv1alpha1.Claw{Spec: clawv1alpha1.ClawSpec{
 			Credentials: openaiCreds,
-			Memory:      &clawv1alpha1.MemorySpec{Enabled: ptr.To(true)},
+			Memory:      memoryBoth(),
 			Config: &clawv1alpha1.ConfigSpec{
 				Raw: &clawv1alpha1.RawConfig{
 					RawExtension: runtime.RawExtension{Raw: []byte(`{"agents":{"defaults":{"memorySearch":{"enabled":false}}}}`)},
@@ -344,7 +501,7 @@ func TestMemoryStackIntegration(t *testing.T) {
 		instance.Name = testInstanceName
 		instance.Namespace = namespace
 		instance.Spec.Credentials = testCredentials() // google provider has gemini embedding adapter (vectors ON)
-		instance.Spec.Memory = &clawv1alpha1.MemorySpec{Enabled: ptr.To(true)}
+		instance.Spec.Memory = memoryBoth()
 		require.NoError(t, k8sClient.Create(ctx, instance))
 
 		reconciler := createClawReconciler()

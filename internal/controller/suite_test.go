@@ -276,7 +276,7 @@ func createClawInstance(t *testing.T, ctx context.Context, name, namespace strin
 	// The memory stack is opt-in (off by default); pin it off so these shared
 	// suites stay focused regardless of any future default change. The enabled
 	// path is covered by the memory-stack tests.
-	instance.Spec.Memory = &clawv1alpha1.MemorySpec{Enabled: ptr.To(false)}
+	instance.Spec.Memory = &clawv1alpha1.MemorySpec{Dreaming: &clawv1alpha1.DreamingSpec{Enabled: ptr.To(false)}, Wiki: &clawv1alpha1.WikiSpec{Enabled: ptr.To(false)}}
 	require.NoError(t, k8sClient.Create(ctx, instance), "failed to create Claw instance")
 }
 
@@ -294,7 +294,7 @@ func createClawInstanceMITMOnly(t *testing.T, ctx context.Context, name, namespa
 	// The memory stack is opt-in (off by default); pin it off so these shared
 	// suites stay focused regardless of any future default change. The enabled
 	// path is covered by the memory-stack tests.
-	instance.Spec.Memory = &clawv1alpha1.MemorySpec{Enabled: ptr.To(false)}
+	instance.Spec.Memory = &clawv1alpha1.MemorySpec{Dreaming: &clawv1alpha1.DreamingSpec{Enabled: ptr.To(false)}, Wiki: &clawv1alpha1.WikiSpec{Enabled: ptr.To(false)}}
 	require.NoError(t, k8sClient.Create(ctx, instance), "failed to create Claw instance")
 }
 

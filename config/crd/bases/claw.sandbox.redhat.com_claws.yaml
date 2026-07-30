@@ -645,20 +645,54 @@ spec:
               memory:
                 description: |-
                   Memory configures the opt-in memory layers (dreaming, memory-wiki)
-                  on top of OpenClaw's always-on memory-core plugin. Disabled by
-                  default. Set spec.memory.enabled: true to activate them.
+                  on top of OpenClaw's always-on memory-core plugin. Each layer is
+                  enabled independently and both default to off.
                 properties:
-                  enabled:
-                    default: false
+                  dreaming:
                     description: |-
-                      Enabled turns on the memory layers that OpenClaw ships disabled by
-                      default: memory-core's dreaming consolidation and the memory-wiki
-                      knowledge vault. It does not gate memory-core itself (OpenClaw's
-                      default memory plugin, always enabled) or vector recall
-                      (auto-configured from an embedding-capable credential independently
-                      of this flag). Defaults to false (opt-in); a nil or absent field
-                      means disabled.
-                    type: boolean
+                      Dreaming configures memory-core's dreaming consolidation. Off unless
+                      dreaming.enabled is true.
+                    properties:
+                      enabled:
+                        default: false
+                        description: |-
+                          Enabled turns on dreaming. Defaults to false (opt-in); a nil or
+                          absent field means disabled.
+                        type: boolean
+                      frequency:
+                        description: |-
+                          Frequency is the cron schedule for dreaming runs. Each run consumes
+                          model tokens independently of user activity, so this is the primary
+                          cost lever. Empty means OpenClaw's default nightly schedule. When
+                          set, it takes precedence over a frequency in spec.config.raw.
+                        type: string
+                      model:
+                        description: |-
+                          Model routes dreaming turns to a specific model (for example a
+                          cheaper one) instead of the instance's primary model. When set, it
+                          takes precedence over a model in spec.config.raw.
+                        type: string
+                    type: object
+                  wiki:
+                    description: |-
+                      Wiki configures the memory-wiki knowledge vault. Off unless
+                      wiki.enabled is true.
+                    properties:
+                      enabled:
+                        default: false
+                        description: |-
+                          Enabled turns on memory-wiki. Defaults to false (opt-in); a nil or
+                          absent field means disabled.
+                        type: boolean
+                      mode:
+                        description: |-
+                          Mode selects the vault mode: bridge (the default) or isolated. When
+                          set, it takes precedence over a vaultMode in spec.config.raw.
+                        enum:
+                        - bridge
+                        - isolated
+                        type: string
+                    type: object
                 type: object
               metrics:
                 description: |-
