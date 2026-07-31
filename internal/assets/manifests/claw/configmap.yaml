@@ -242,6 +242,7 @@ data:
     const managedRuntimePaths = [
       { name: "models.providers", parts: ["models", "providers"] },
       { name: "agents.defaults.models", parts: ["agents", "defaults", "models"] },
+      { name: "agents.defaults.modelPolicy", parts: ["agents", "defaults", "modelPolicy"] },
       { name: "channels", parts: ["channels"] },
       { name: "plugins.entries", parts: ["plugins", "entries"] },
     ];
@@ -530,8 +531,71 @@ data:
       fs.mkdirSync(path.join(pvcDir, sub), { recursive: true });
     }
 
-    // Merge or overwrite openclaw.json
-    const ops = JSON.parse(fs.readFileSync(path.join(configDir, "operator.json"), "utf8"));
+    function supportsOpenClaw72Config() {
+      let version;
+      try {
+        version = require("/app/package.json").version;
+      } catch (err) {
+        console.warn(`[init-config] could not read OpenClaw package metadata; using legacy config: ${err.message}`);
+        return false;
+      }
+      const match = /^(\d+)\.(\d+)\.(\d+)/.exec(version);
+      if (!match) return false;
+      const [major, minor, patch] = match.slice(1).map(Number);
+      // Calendar-style versions use a four-digit year (for example, 2026.7.2);
+      // semantic versions (for example, 7.2.0) have a lower major version.
+      if (major >= 1000) return major > 2026 || (major === 2026 && (minor > 7 || (minor === 7 && patch >= 2)));
+      return major > 7 || (major === 7 && minor >= 2);
+    }
+
+    function normalize72AgentRoster(config) {
+      if (!supportsOpenClaw72Config() || !Array.isArray(config?.agents?.list)) return config;
+      const entries = { ...(config.agents.entries || {}) };
+      for (const agent of config.agents.list) {
+        if (!agent || typeof agent !== "object" || typeof agent.id !== "string" || !agent.id) continue;
+        const { id, ...entry } = agent;
+        entries[id] = deepMerge(entries[id] || {}, entry);
+      }
+      let seenDefault = false;
+      for (const id of Object.keys(entries)) {
+        if (entries[id]?.default !== true) continue;
+        if (seenDefault) {
+          entries[id] = { ...entries[id] };
+          delete entries[id].default;
+        } else {
+          seenDefault = true;
+        }
+      }
+      if (!seenDefault) {
+        const firstID = Object.keys(entries)[0];
+        if (firstID) entries[firstID] = { ...entries[firstID], default: true };
+      }
+      const agents = { ...config.agents, entries };
+      delete agents.list;
+      return { ...config, agents };
+    }
+
+    const migrationJSONKey = "migration.json";
+    const usesOpenClaw72Config = supportsOpenClaw72Config();
+    // The controller-created doctor Job must merge the effective config before
+    // doctor can repair it. Gateway pods never set this opt-in migration env.
+    const doctorMigration = process.env.OPENCLAW_DOCTOR_MIGRATION === "1";
+    let migration = { doctorFixComplete: false };
+    try {
+      migration = JSON.parse(fs.readFileSync(path.join(configDir, migrationJSONKey), "utf8"));
+    } catch {
+      if (usesOpenClaw72Config && !doctorMigration) {
+        throw new Error(`[init-config] ${migrationJSONKey} is missing or invalid; OpenClaw 7.2+ requires an approved spec.migration.doctorFix Job before startup`);
+      }
+    }
+    if (usesOpenClaw72Config && !migration.doctorFixComplete && !doctorMigration) {
+      throw new Error("OpenClaw 7.2+ requires an approved spec.migration.doctorFix Job before startup");
+    }
+
+    // The init container runs the exact Gateway image, so this selects config
+    // from the installed OpenClaw version rather than an unreliable image tag.
+    const operatorConfig = usesOpenClaw72Config ? "operator-7.2.json" : "operator.json";
+    const ops = JSON.parse(fs.readFileSync(path.join(configDir, operatorConfig), "utf8"));
     const seed = JSON.parse(fs.readFileSync(path.join(configDir, "openclaw.json"), "utf8"));
     const pvcPath = path.join(pvcDir, "openclaw.json");
     const agentFilesSourceDir = prepareAgentFilesSource();
@@ -546,7 +610,7 @@ data:
       let base = JSON.parse(fs.readFileSync(pvcPath, "utf8"));
       const previousState = readManagedRuntimeState();
       const merged = userManagedConfig(base, ops, previousState);
-      fs.writeFileSync(pvcPath, JSON.stringify(merged.config, null, 2), { mode: 0o600 });
+      fs.writeFileSync(pvcPath, JSON.stringify(normalize72AgentRoster(merged.config), null, 2), { mode: 0o600 });
       writeManagedRuntimeState(merged.state);
       console.log("[init-config] preserved user openclaw.json and refreshed operator-provided runtime additions");
     } else if (mode === "merge" && fs.existsSync(pvcPath)) {
@@ -579,11 +643,11 @@ data:
       }
       const removedModels = pruneManagedRuntimeEntries(merged, previousState, nextState);
       pruneRemovedModelSelections(merged, ops, removedModels);
-      fs.writeFileSync(pvcPath, JSON.stringify(merged, null, 2), { mode: 0o600 });
+      fs.writeFileSync(pvcPath, JSON.stringify(normalize72AgentRoster(merged), null, 2), { mode: 0o600 });
       writeManagedRuntimeState(nextState);
       console.log("[init-config] merged operator.json into existing openclaw.json");
     } else {
-      fs.writeFileSync(pvcPath, JSON.stringify(mergeConfigs(seedConfig, ops), null, 2), { mode: 0o600 });
+      fs.writeFileSync(pvcPath, JSON.stringify(normalize72AgentRoster(mergeConfigs(seedConfig, ops)), null, 2), { mode: 0o600 });
       writeManagedRuntimeState(managedRuntimeState(ops));
       console.log(`[init-config] wrote openclaw.json (mode=${mode}, first_run=${!fs.existsSync(pvcPath)})`);
     }
@@ -1273,21 +1337,21 @@ data:
     If no eligible credential exists, memory search is disabled automatically.
 
     **User override:** To use a custom embedding endpoint or disable memory
-    search, set `agents.defaults.memorySearch` in `spec.config.raw` — the
-    operator skips injection entirely when this key is present:
+    search, set `memory.search` for a 7.2 gateway image or
+    `agents.defaults.memorySearch` for a legacy gateway image. The operator
+    skips injection entirely when the active schema's key is present:
 
     ```yaml
     spec:
       config:
         raw:
-          agents:
-            defaults:
-              memorySearch:
-                provider: "openai-compatible"
-                model: "my-embedding-model"
-                remote:
-                  baseUrl: "http://my-endpoint/v1"
-                  apiKey: "placeholder"
+          memory:
+            search:
+              provider: "openai-compatible"
+              model: "my-embedding-model"
+              remote:
+                baseUrl: "http://my-endpoint/v1"
+                apiKey: "placeholder"
     ```
 
     # Messaging Channels
@@ -1718,7 +1782,7 @@ data:
 
     **Always-win (operator sets unconditionally — `spec.config.raw` cannot override):**
     - `gateway.mode`, `gateway.bind`, `gateway.port`, `gateway.controlUi.enabled`
-    - `gateway.auth.*`, `gateway.controlUi.dangerouslyDisableDeviceAuth`
+    - `gateway.auth.*`
     - `models.providers` (driven by `spec.credentials` and `spec.customProviders`)
     - `channels.*` (driven by `spec.credentials[].channel`)
     - `mcp.servers` (driven by `spec.mcpServers`)
@@ -1729,11 +1793,14 @@ data:
       are additional origins
     - `gateway.trustedProxies` — RFC1918 ranges always appended; user entries are
       additional CIDRs
-    - `agents.defaults.models` — catalog models always present; user entries win on
+    - `agents.defaults.models` — catalog metadata always present; user entries win on
       key collision
+    - `agents.defaults.modelPolicy.allow` — generated from the catalog unless
+      `spec.config.raw` supplies an explicit `modelPolicy`
     - `agents.defaults.model.primary` — user value wins over catalog default
-    - `agents.defaults.memorySearch` — operator auto-sets `provider` from the first
-      embedding-capable credential; if user sets any `memorySearch` key in
+    - `memory.search` for 7.2 gateway images or `agents.defaults.memorySearch`
+      for legacy gateway images — operator auto-sets `provider` from the first
+      embedding-capable credential; if user sets the active schema's key in
       `spec.config.raw`, operator skips injection entirely
     - `plugins.entries.memory-core`, `plugins.entries.memory-wiki`: each written
       only when its `spec.memory` layer (dreaming, wiki) is enabled, and only for

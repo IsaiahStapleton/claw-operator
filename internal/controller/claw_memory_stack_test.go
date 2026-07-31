@@ -82,7 +82,7 @@ func TestMemoryLayerToggles(t *testing.T) {
 }
 
 func memSearch(config map[string]any) map[string]any {
-	return config["agents"].(map[string]any)["defaults"].(map[string]any)["memorySearch"].(map[string]any)
+	return config["memory"].(map[string]any)["search"].(map[string]any)
 }
 func memEntries(config map[string]any) map[string]any {
 	return config["plugins"].(map[string]any)["entries"].(map[string]any)
@@ -305,12 +305,10 @@ func TestInjectMemoryStack(t *testing.T) {
 		assert.False(t, hasEntries, "no operator entries injected over a user override")
 	})
 
-	t.Run("user memorySearch override is not re-enabled by stack injection", func(t *testing.T) {
+	t.Run("user memory search override is not re-enabled by stack injection", func(t *testing.T) {
 		config := map[string]any{
-			"agents": map[string]any{
-				"defaults": map[string]any{
-					"memorySearch": map[string]any{"enabled": false},
-				},
+			"memory": map[string]any{
+				"search": map[string]any{"enabled": false},
 			},
 		}
 		instance := &clawv1alpha1.Claw{Spec: clawv1alpha1.ClawSpec{
@@ -320,23 +318,23 @@ func TestInjectMemoryStack(t *testing.T) {
 			},
 			Config: &clawv1alpha1.ConfigSpec{
 				Raw: &clawv1alpha1.RawConfig{
-					RawExtension: runtime.RawExtension{Raw: []byte(`{"agents":{"defaults":{"memorySearch":{"enabled":false}}}}`)},
+					RawExtension: runtime.RawExtension{Raw: []byte(`{"memory":{"search":{"enabled":false}}}`)},
 				},
 			},
 		}}
-		// injectMemorySearch would skip (user set memorySearch); injectMemoryStack must not re-enable.
+		// injectMemorySearch would skip (user set memory.search); injectMemoryStack must not re-enable.
 		injectMemoryStack(config, instance, true)
 		assert.Equal(t, false, memSearch(config)["enabled"], "user's enabled:false must survive stack injection")
 		// the native layers still seed:
 		assert.Equal(t, true, memEntries(config)["memory-wiki"].(map[string]any)["enabled"])
 	})
 
-	// Pins the repair described in injectMemoryStack: writing memorySearch.enabled
+	// Pins the repair described in injectMemoryStack: writing memory.search.enabled
 	// looks redundant next to injectMemorySearch, but it is what clears a stale
 	// enabled:false left on the PVC by an earlier reconcile that ran without an
 	// embedding-capable credential. Deleting the write as dead code would silently
 	// strand those instances with vector recall off after a credential is added.
-	t.Run("stack repairs a stale memorySearch.enabled:false once a credential exists", func(t *testing.T) {
+	t.Run("stack repairs a stale memory.search.enabled:false once a credential exists", func(t *testing.T) {
 		config := map[string]any{}
 		instance := &clawv1alpha1.Claw{Spec: clawv1alpha1.ClawSpec{
 			Memory: memoryBoth(),
@@ -465,16 +463,16 @@ func TestSetMemoryStackCondition(t *testing.T) {
 		assert.Equal(t, metav1.ConditionTrue, c.Status)
 		assert.Equal(t, clawv1alpha1.ConditionReasonMemoryStackEnabled, c.Reason)
 	})
-	t.Run("user-owned memorySearch does not claim vector recall", func(t *testing.T) {
+	t.Run("user-owned memory search does not claim vector recall", func(t *testing.T) {
 		// An embedding-capable credential is present, but the user disabled
-		// memorySearch in spec.config.raw, so the operator backs off. The
+		// memory.search in spec.config.raw, so the operator backs off. The
 		// condition must not assert "with vector recall".
 		instance := &clawv1alpha1.Claw{Spec: clawv1alpha1.ClawSpec{
 			Credentials: openaiCreds,
 			Memory:      memoryBoth(),
 			Config: &clawv1alpha1.ConfigSpec{
 				Raw: &clawv1alpha1.RawConfig{
-					RawExtension: runtime.RawExtension{Raw: []byte(`{"agents":{"defaults":{"memorySearch":{"enabled":false}}}}`)},
+					RawExtension: runtime.RawExtension{Raw: []byte(`{"memory":{"search":{"enabled":false}}}`)},
 				},
 			},
 		}}
@@ -526,7 +524,7 @@ func TestMemoryStackIntegration(t *testing.T) {
 			Name: getConfigMapName(testInstanceName), Namespace: namespace,
 		}, cm))
 		assert.Contains(t, cm.Data[operatorJSONKey], "memory-wiki", "operator.json must contain memory-wiki")
-		assert.Contains(t, cm.Data[operatorJSONKey], "memorySearch", "operator.json must contain memorySearch")
+		assert.Contains(t, cm.Data[operatorJSONKey], `"search"`, "operator.json must contain memory.search")
 		assert.NotContains(t, cm.Data[operatorJSONKey], "contextEngine",
 			"operator.json must not select a context engine")
 

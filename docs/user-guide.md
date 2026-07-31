@@ -112,7 +112,7 @@ spec:
 EOF
 ```
 
-> **GPT-5.x models:** OpenClaw routes newer GPT models (gpt-5.5, gpt-5.4, gpt-5.4-mini) through an internal provider called `openai-codex`. The operator handles this automatically — when you configure an `openai` credential, a companion `openai-codex` provider entry is created with the same endpoint and credentials. No additional configuration is needed.
+> **GPT-5.x models:** On the 7.2 config generator, configure the canonical `openai` provider. Legacy config keeps the `openai-codex` companion provider for older OpenClaw releases.
 
 ### xAI (Grok)
 
@@ -1259,13 +1259,13 @@ The operator scans `spec.credentials` in order and picks the first provider that
 | `openai` | `bearer`       | `openai`              |
 | `google` | `apiKey`       | `gemini`              |
 
-When a match is found, the operator sets `agents.defaults.memorySearch.provider` in `operator.json`. OpenClaw's native adapter handles model selection (e.g., `text-embedding-3-small` for OpenAI, `gemini-embedding-001` for Gemini). Embedding requests route through the proxy, which injects the real credential via MITM — just like chat completions.
+When a match is found, the operator sets `agents.defaults.memorySearch.provider` for the legacy generator or `memory.search.provider` for the 7.2 generator. OpenClaw's native adapter handles model selection (e.g., `text-embedding-3-small` for OpenAI, `gemini-embedding-001` for Gemini). Embedding requests route through the proxy, which injects the real credential via MITM — just like chat completions.
 
-Providers without embedding support (`anthropic`, `xai`) and Google credentials with `type: gcp` (Vertex AI) are not eligible. If no embedding-capable credential exists, the operator sets `memorySearch.enabled: false` to suppress runtime errors.
+Providers without embedding support (`anthropic`, `xai`) and Google credentials with `type: gcp` (Vertex AI) are not eligible. If no embedding-capable credential exists, the operator disables memory search using the matching legacy or 7.2 config key.
 
 ### Overriding memory search
 
-To use a custom embedding endpoint (e.g., vLLM, Ollama, LiteLLM), configure it via `spec.config.raw`. When `agents.defaults.memorySearch` is present in the user config, the operator does not inject anything:
+To use a custom embedding endpoint (e.g., vLLM, Ollama, LiteLLM), configure it via `spec.config.raw`. Use `agents.defaults.memorySearch` with a legacy gateway image, or `memory.search` with a 7.2 gateway image; the operator does not inject either key when it is the active schema's user override:
 
 ```sh
 oc apply -n $NS -f - <<EOF
@@ -1283,14 +1283,13 @@ spec:
           key: api-key
   config:
     raw:
-      agents:
-        defaults:
-          memorySearch:
-            provider: "openai-compatible"
-            model: "my-embedding-model"
-            remote:
-              baseUrl: "http://my-endpoint/v1"
-              apiKey: "placeholder"
+      memory:
+        search:
+          provider: "openai-compatible"
+          model: "my-embedding-model"
+          remote:
+            baseUrl: "http://my-endpoint/v1"
+            apiKey: "placeholder"
 EOF
 ```
 
@@ -1300,9 +1299,8 @@ To explicitly disable memory search:
 spec:
   config:
     raw:
-      agents:
-        defaults:
-          memorySearch:
+      memory:
+        search:
             enabled: false
 ```
 
@@ -1392,7 +1390,7 @@ oc get claw instance -n $NS -o jsonpath='{range .status.conditions[?(@.type=="Me
 Inside the gateway pod you can confirm the runtime view:
 
 ```sh
-openclaw config get agents.defaults.memorySearch
+openclaw config get memory.search
 openclaw config get plugins.entries.memory-core
 openclaw cron list
 ```
@@ -1765,7 +1763,7 @@ The operator enforces a three-tier model. Not all config keys are equal:
 | Tier | Keys | Behavior |
 |------|------|----------|
 | Always-win | `gateway.mode`, `gateway.bind`, `gateway.port`, `gateway.controlUi.enabled`, `gateway.auth.*`, `models.providers`, `channels.*`, `mcp.servers`, `tools.web.*` | Operator sets unconditionally — `spec.config.raw` cannot override |
-| Append/merge | `gateway.controlUi.allowedOrigins`, `gateway.trustedProxies`, `agents.defaults.models`, `agents.defaults.model.primary` | Operator provides its part, user values are merged or appended |
+| Append/merge | `gateway.controlUi.allowedOrigins`, `gateway.trustedProxies`, `agents.defaults.models`, generated `agents.defaults.modelPolicy.allow` (7.2 only), `agents.defaults.model.primary` | Operator provides its part, user values are merged or appended |
 | User-only | `diagnostics.*`, `session.*`, `logging.*`, `plugins.*` (non-declared), `skills.*`, `ui.*`, `cron.*`, `hooks.*`, etc. | Operator never touches — full user control |
 
 For the complete enrichment policy, see [ADR-0013](adr/0013-spec-config.md).

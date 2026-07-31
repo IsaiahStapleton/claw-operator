@@ -1255,7 +1255,7 @@ spec:
 			assert.False(t, hasPassword, "password must not be in ConfigMap")
 
 			controlUI, ok := gateway["controlUi"].(map[string]any)
-			require.True(t, ok, "gateway should contain controlUi section")
+			require.True(t, ok, "legacy operator.json must include gateway.controlUi")
 			assert.Equal(t, true, controlUI["dangerouslyDisableDeviceAuth"])
 
 			t.Log("verifying gateway deployment has OPENCLAW_GATEWAY_PASSWORD env var from Secret")

@@ -16,7 +16,6 @@ Per-provider knowledge was scattered across four independent maps in the control
 | Map | Purpose | File |
 |-----|---------|------|
 | `knownAPIKeyProviders` | Domain + header defaults for apiKey credentials | `claw_providers.go` |
-| `companionProviders` | Internal provider name mappings (e.g., openai → openai-codex) | `claw_providers.go` |
 | `vertexProviderAPIMapping` | Wire format API for Vertex AI SDK path | `claw_providers.go` |
 | `modelCatalog` | Model names and aliases per provider | `claw_models.go` |
 
@@ -50,7 +49,6 @@ A single `knownProviders` map of `providerDefaults` structs in `claw_providers.g
 | `API` | OpenClaw wire format identifier | `anthropic-messages` |
 | `VertexAPI` | Wire format for Vertex AI SDK path | `anthropic-messages` |
 | `BasePath` | URL path appended to upstream host | (empty) |
-| `Companions` | Internal provider names auto-injected alongside | (empty) |
 | `VertexPlugin` | ClawHub package required for Vertex SDK path | `@openclaw/anthropic-vertex-provider` |
 | `Models` | Model catalog entries (name + alias) | `[{claude-sonnet-4-6, Claude Sonnet 4.6}, ...]` |
 
@@ -148,8 +146,8 @@ Changed `sort.Slice` to `sort.SliceStable` and added a deterministic tie-breaker
 
 ## Backward Compatibility
 
-- Provider behavior is unchanged — same defaults, same routing, same model catalogs.
-- The wire format fix changes the `api` field in generated `models.providers` entries for `google`, `anthropic`, and `openai-codex`. This is a bug fix (they were using the wrong wire format before).
+- Provider behavior is unchanged — same defaults, same routing, same model catalogs. The 7.2 generator normalizes legacy `codex` and `openai-codex` inputs to `openai`; legacy config retains the companion-provider behavior.
+- The wire format fix changes the `api` field in generated `models.providers` entries for `google` and `anthropic`. This is a bug fix (they were using the wrong wire format before).
 - Plugin install script now uses manifest-tracked cleanup, preserving user-installed plugins across pod restarts.
 
 ---

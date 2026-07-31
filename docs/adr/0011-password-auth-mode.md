@@ -5,14 +5,14 @@
 
 ## Overview
 
-Add an alternative gateway authentication mode to the Claw CRD. The default token-based authentication generates a per-instance cryptographic token and requires device pairing — each browser must complete a one-time approval before interacting with the instance. This provides strong per-device identity but adds friction when multiple users need quick access to the same instance (workshops, shared team environments, demos).
+Add an alternative gateway authentication mode to the Claw CRD. The default token-based authentication generates a per-instance cryptographic token and, for non-local Control UI sessions, requires device pairing — each browser must complete a one-time approval before interacting with the instance. This provides strong per-device identity but adds friction when multiple users need quick access to the same instance (workshops, shared team environments, demos).
 
-Password mode offers a simpler alternative: users authenticate by entering a shared password in the browser. The operator reads the password from a Kubernetes Secret and injects it into the gateway config.
+Password mode offers a simpler alternative: users authenticate by entering a shared password in the browser. The gateway receives the password through the `OPENCLAW_GATEWAY_PASSWORD` environment variable sourced from a Kubernetes Secret; `injectAuthMode` writes only `gateway.auth.mode`, and the password is never stored in the ConfigMap.
 
 The `spec.auth` field provides three controls:
 - `mode` — selects between `token` (default) and `password` authentication
 - `passwordSecretRef` — references the Secret holding the shared password (required for password mode)
-- `disableDevicePairing` — independently controls browser device identity checks (defaults based on mode)
+- `disableDevicePairing` — controls device identity only for legacy generated config; the 7.2 generator requires device identity for non-local Control UI sessions
 
 ## Decisions
 
@@ -21,7 +21,7 @@ The `spec.auth` field provides three controls:
 | 1 | Where should the password live? | Kubernetes Secret via `passwordSecretRef` | Consistent with every other secret in the operator. Keeps passwords out of the CR spec. Secret watch triggers re-reconcile on rotation. |
 | 2 | Should `passwordSecretRef` reuse `SecretRefEntry`? | Yes | Same struct used by credentials, web search, MCP. No new types needed. |
 | 3 | How to validate the conditional requirement? | CEL `XValidation` rule on `AuthSpec` | Rejects invalid CRs at admission. Same pattern as `CredentialSpec`, `McpServerSpec`, `WebSearchSpec`. No webhook infrastructure needed. |
-| 4 | Should device pairing be automatically disabled? | Default yes for password, but configurable via `disableDevicePairing` | Upstream OpenClaw treats auth mode and device pairing as orthogonal concerns. Defaulting to disabled in password mode covers the common case, but an explicit `disableDevicePairing` field lets users override in either direction. |
+| 4 | Should device pairing be automatically disabled? | Legacy only | The legacy generator retains the existing setting; the explicit 7.2 generator stops emitting the retired bypass. |
 | 5 | Should `status.url` include the token fragment? | No — omit `#token=` in password mode | The token fragment auto-authenticates the browser, bypassing the password prompt. In password mode the user enters the password in the UI. |
 | 6 | Should this be a new CRD field or a config override? | New `spec.auth` field | Auth mode is infrastructure-level. It affects gateway config, status URL format, and device pairing behavior. Too cross-cutting for a config patch. |
 
@@ -43,10 +43,8 @@ Claw CR spec.auth
        │     ├── mode metadata only (mode == password):
        │     │     gateway.auth.mode = "password"
        │     │     (no password value — delivered via env var)
-       │     ├── device pairing (shouldDisableDevicePairing()):
-       │     │     explicit disableDevicePairing overrides mode default
-       │     │     gateway.controlUi.dangerouslyDisableDeviceAuth = true
-       │     └── no-op when both are unnecessary
+       │     └── device pairing:
+       │           legacy config honors disableDevicePairing; 7.2 requires identity for non-local Control UI sessions
        │
  configureDeployments()
        └─► configureClawDeploymentForAuth()
@@ -61,7 +59,7 @@ Claw CR spec.auth
 
 ### Secret Watch
 
-`clawReferencesSecret` includes `spec.auth.passwordSecretRef` so that password Secret updates trigger re-reconcile — the new password is injected into the ConfigMap and the gateway pod rolls out.
+`clawReferencesSecret` includes `spec.auth.passwordSecretRef` so that password Secret updates trigger re-reconcile. The gateway Deployment supplies the password through `OPENCLAW_GATEWAY_PASSWORD`, sourced from the password Secret via `secretKeyRef`; it is never written to the ConfigMap.
 
 ## CRD Schema
 
@@ -74,7 +72,7 @@ spec:
     passwordSecretRef:          # required when mode is "password"
       name: my-password
       key: password
-    disableDevicePairing: true  # optional; defaults to true for password, false for token
+    disableDevicePairing: false # legacy gateway images only; false requires pairing
 ```
 
 ### CEL Validation
@@ -91,11 +89,11 @@ On `AuthSpec`:
 
 Auth configuration is split between the ConfigMap (non-sensitive metadata) and the Deployment (secret-backed env var):
 
-**ConfigMap** (`injectAuthModeIntoConfigMap`): writes only `gateway.auth.mode` and `gateway.controlUi.dangerouslyDisableDeviceAuth`. No password value is stored in the ConfigMap. This follows the same pattern as the gateway token, which is delivered via `OPENCLAW_GATEWAY_TOKEN` env var rather than the config file.
+**ConfigMap** (`injectAuthMode`): writes only `gateway.auth.mode`. No password value is stored in the ConfigMap. This follows the same pattern as the gateway token, which is delivered via `OPENCLAW_GATEWAY_TOKEN` env var rather than the config file.
 
 **Deployment** (`configureClawDeploymentForAuth`): adds `OPENCLAW_GATEWAY_PASSWORD` as an env var sourced from the password Secret via `secretKeyRef`. OpenClaw reads this env var as a fallback when `gateway.auth.password` is not in the config (see `auth-surface-resolution.ts` in upstream OpenClaw).
 
-The `shouldDisableDevicePairing` helper resolves the effective value: if `disableDevicePairing` is explicitly set, that value is used; otherwise it defaults to `true` for password mode and `false` for token mode.
+The operator writes both legacy and 7.2 generated configs. A user-approved `spec.migration.doctorFix` Job migrates the PVC before a 7.2 image starts; then the init container reads the version from the same OpenClaw image that runs the gateway and selects the matching config. Legacy config continues to emit the bypass according to `disableDevicePairing`, while OpenClaw 7.2 and later require device identity for non-local Control UI sessions.
 
 When neither concern applies (auth is nil, mode is token, no explicit override), both functions are no-ops.
 
@@ -123,9 +121,9 @@ spec:
       provider: google
 ```
 
-Device pairing is disabled by default in password mode. Users authenticate by entering the password in the browser.
+Password mode retains its existing pairing setting when its gateway image uses the legacy config.
 
-### Password mode with device pairing enabled
+### Password mode with device pairing
 
 ```yaml
 spec:
@@ -134,10 +132,9 @@ spec:
     passwordSecretRef:
       name: team-password
       key: password
-    disableDevicePairing: false
 ```
 
-Users enter the shared password and also go through device pairing. Useful when you want simplified credential sharing but still need per-device identity tracking.
+Users enter the shared password and also go through device pairing for non-local Control UI sessions when their gateway image uses the 7.2 config. Before that, `disableDevicePairing` retains its existing behavior.
 
 ### Token mode (default)
 
@@ -152,7 +149,7 @@ spec:
       provider: google
 ```
 
-No `auth` field needed — token mode with device pairing is the default.
+No `auth` field is needed. Legacy config disables pairing by default; the 7.2 config generator requires it for non-local Control UI sessions.
 
 ## Future Considerations
 

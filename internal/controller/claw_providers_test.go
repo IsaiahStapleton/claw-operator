@@ -30,29 +30,6 @@ import (
 func TestKnownProvidersConsistency(t *testing.T) {
 	const googleProvider = "google"
 
-	t.Run("companions must be defined in knownProviders", func(t *testing.T) {
-		for provider, defaults := range knownProviders {
-			for _, companion := range defaults.Companions {
-				_, ok := knownProviders[companion]
-				assert.True(t, ok,
-					"provider %q declares companion %q which is not defined in knownProviders",
-					provider, companion)
-			}
-		}
-	})
-
-	t.Run("companions must have explicit API set", func(t *testing.T) {
-		for provider, defaults := range knownProviders {
-			for _, companion := range defaults.Companions {
-				cDefaults := knownProviders[companion]
-				assert.NotEmpty(t, cDefaults.API,
-					"provider %q declares companion %q which has no API — "+
-						"companions use a non-standard wire format by definition, so API must be set",
-					provider, companion)
-			}
-		}
-	})
-
 	t.Run("providers with Domain must have CredType set", func(t *testing.T) {
 		for provider, defaults := range knownProviders {
 			if defaults.Domain != "" {
@@ -83,23 +60,17 @@ func TestKnownProvidersConsistency(t *testing.T) {
 
 	t.Run("Vertex-capable providers with non-default wire format must have VertexAPI", func(t *testing.T) {
 		// Only check providers that users can configure with type: gcp.
-		// Skip google (uses Vertex directly, not the SDK path),
-		// companion-only providers (never appear as cred.Provider on GCP creds),
-		// and providers that are not available via Vertex AI at all.
-		isCompanion := map[string]bool{}
-		for _, defaults := range knownProviders {
-			for _, c := range defaults.Companions {
-				isCompanion[c] = true
-			}
-		}
+		// Skip google (uses Vertex directly, not the SDK path) and providers
+		// that are not available via Vertex AI at all.
 		notOnVertex := map[string]bool{
-			"openai":     true,
-			"xai":        true,
-			"openrouter": true,
+			"openai":       true,
+			"openai-codex": true, // Legacy companion only; never selected for Vertex SDK credentials.
+			"xai":          true,
+			"openrouter":   true,
 		}
 
 		for provider, defaults := range knownProviders {
-			if provider == googleProvider || isCompanion[provider] || notOnVertex[provider] {
+			if provider == googleProvider || notOnVertex[provider] {
 				continue
 			}
 			if defaults.API != "" && defaults.VertexAPI == "" {
@@ -142,7 +113,6 @@ func TestBuildProviderEntry(t *testing.T) {
 	}{
 		{name: "google uses native Gemini API", provider: "google", wantAPI: "google-generative-ai"},
 		{name: "anthropic uses Messages API", provider: "anthropic", wantAPI: "anthropic-messages"},
-		{name: "openai-codex uses ChatGPT responses API", provider: "openai-codex", wantAPI: "openai-chatgpt-responses"},
 		{name: "openai uses OpenClaw default wire format", provider: "openai", wantAPI: ""},
 		{name: "xai uses OpenAI Responses API", provider: "xai", wantAPI: "openai-responses"},
 		{name: "openrouter uses OpenClaw default wire format", provider: "openrouter", wantAPI: ""},
@@ -184,8 +154,9 @@ func TestProviderModelCatalog(t *testing.T) {
 		assert.Nil(t, providerModelCatalog("custom-llm"))
 	})
 
-	t.Run("returns nil for provider with no models", func(t *testing.T) {
-		assert.Nil(t, providerModelCatalog("openai-codex"))
+	t.Run("maps legacy Codex provider IDs to OpenAI", func(t *testing.T) {
+		assert.Equal(t, "openai", canonicalProviderID("codex"))
+		assert.Equal(t, "openai", canonicalProviderID("openai-codex"))
 	})
 }
 

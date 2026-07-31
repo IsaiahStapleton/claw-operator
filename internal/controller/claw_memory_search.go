@@ -20,20 +20,26 @@ import (
 	clawv1alpha1 "github.com/codeready-toolchain/claw-operator/api/v1alpha1"
 )
 
-// userHasMemorySearchConfig returns true when the merged config already
-// contains agents.defaults.memorySearch. Since the operator's base template
-// (operator.json) has no memorySearch key, its presence means the user set
-// it via spec.config.raw — the operator should not override it.
-func userHasMemorySearchConfig(config map[string]any) bool {
-	agents, ok := config["agents"].(map[string]any)
+// userHasMemorySearchConfig returns true when the merged config has a
+// schema-appropriate user override, so the operator must not replace it.
+func userHasMemorySearchConfig(config map[string]any, use72Config bool) bool {
+	if !use72Config {
+		agents, ok := config["agents"].(map[string]any)
+		if !ok {
+			return false
+		}
+		defaults, ok := agents["defaults"].(map[string]any)
+		if !ok {
+			return false
+		}
+		_, ok = defaults["memorySearch"]
+		return ok
+	}
+	memory, ok := config["memory"].(map[string]any)
 	if !ok {
 		return false
 	}
-	defaults, ok := agents["defaults"].(map[string]any)
-	if !ok {
-		return false
-	}
-	_, ok = defaults["memorySearch"]
+	_, ok = memory["search"]
 	return ok
 }
 
@@ -52,20 +58,34 @@ func firstEmbeddingProvider(instance *clawv1alpha1.Claw) (adapter string, ok boo
 	return "", false
 }
 
-// injectMemorySearch auto-configures agents.defaults.memorySearch based on
+// injectMemorySearch auto-configures memory search based on
 // the first embedding-capable credential. GCP credentials (Vertex AI) are
 // skipped because the gemini adapter expects API key auth, not OAuth2 tokens.
 // If no eligible provider is found, memory search is explicitly disabled to
 // suppress noisy runtime errors. User-provided memorySearch config in
 // spec.config.raw takes full precedence; the operator never overrides it.
 func injectMemorySearch(config map[string]any, instance *clawv1alpha1.Claw) {
-	if userHasMemorySearchConfig(config) {
+	injectMemorySearchForGeneration(config, instance, openClaw72ConfigGeneration)
+}
+
+func injectMemorySearchForGeneration(config map[string]any, instance *clawv1alpha1.Claw, generation configGeneration) {
+	use72Config := generation == openClaw72ConfigGeneration
+	if userHasMemorySearchConfig(config, use72Config) {
 		return
 	}
 
 	if adapter, ok := firstEmbeddingProvider(instance); ok {
-		setNestedValue(config, adapter, "agents", "defaults", "memorySearch", "provider")
+		if use72Config {
+			setNestedValue(config, adapter, "memory", "search", "provider")
+		} else {
+			setNestedValue(config, adapter, "agents", "defaults", "memorySearch", "provider")
+		}
 		return
 	}
-	setNestedValue(config, false, "agents", "defaults", "memorySearch", "enabled")
+
+	if use72Config {
+		setNestedValue(config, false, "memory", "search", "enabled")
+	} else {
+		setNestedValue(config, false, "agents", "defaults", "memorySearch", "enabled")
+	}
 }

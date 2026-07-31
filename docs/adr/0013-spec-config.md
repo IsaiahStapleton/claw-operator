@@ -144,7 +144,7 @@ override.
 | Key | Driven by |
 |-----|-----------|
 | `gateway.mode`, `gateway.bind`, `gateway.port`, `gateway.controlUi.enabled` | Infrastructure — must match pod networking |
-| `gateway.auth.*`, `gateway.controlUi.dangerouslyDisableDeviceAuth` | `spec.auth` |
+| `gateway.auth.*` | `spec.auth`; legacy config also writes `gateway.controlUi.dangerouslyDisableDeviceAuth` from `spec.auth.disableDevicePairing`, while the 7.2 generator omits that retired field |
 | `models.providers` | `spec.credentials` |
 | `channels.*`, `plugins.entries.<channel>` | `spec.credentials[].channel` |
 | `mcp.servers` | `spec.mcpServers` |

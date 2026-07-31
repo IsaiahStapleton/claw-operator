@@ -54,8 +54,7 @@ type providerDefaults struct {
 	// (e.g. "/v1beta" for Google's Gemini REST API).
 	BasePath string
 
-	// Companions are additional provider entries auto-injected alongside
-	// this provider. Each companion must itself be defined in knownProviders.
+	// Companions are legacy provider entries required by pre-7.2 OpenClaw.
 	Companions []string
 
 	// VertexPlugin is the ClawHub package spec for the OpenClaw plugin
@@ -86,7 +85,7 @@ type providerDefaults struct {
 
 // knownProviders is the single source of truth for all per-provider
 // configuration in the operator. Credential defaults, wire format, model
-// catalog, companion relationships, and routing info are all defined here.
+// catalog, and routing info are all defined here.
 //
 // Providers not in this map (e.g., custom providers) still work -- they
 // just get no defaults, no API override (OpenClaw defaults to
@@ -158,6 +157,15 @@ var knownProviders = map[string]providerDefaults{
 	},
 }
 
+func canonicalProviderID(provider string) string {
+	switch provider {
+	case "codex", "openai-codex":
+		return "openai"
+	default:
+		return provider
+	}
+}
+
 // usesVertexSDK returns true when a credential should use the native Vertex AI SDK
 // instead of a gateway proxy route. This applies to non-Google GCP providers (e.g.,
 // Anthropic via Vertex AI), where the provider's SDK format doesn't match Vertex AI's
@@ -194,6 +202,7 @@ func buildProviderEntry(provider, baseURL, apiKey string) map[string]any {
 // Explicit values are preserved (escape hatch). Returns an error if required fields
 // are still missing after applying defaults (unknown provider without domain/apiKey).
 func resolveProviderDefaults(cred *clawv1alpha1.CredentialSpec) error {
+	cred.Provider = canonicalProviderID(cred.Provider)
 	if cred.Type == "" {
 		if defaults, ok := knownProviders[cred.Provider]; ok && defaults.CredType != "" {
 			cred.Type = defaults.CredType

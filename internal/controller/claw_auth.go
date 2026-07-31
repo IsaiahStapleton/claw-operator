@@ -54,10 +54,6 @@ func (r *ClawResourceReconciler) resolveAuthPassword(ctx context.Context, instan
 	return string(val), nil
 }
 
-// shouldDisableDevicePairing returns whether device identity checks should be
-// disabled based on the auth spec. When DisableDevicePairing is explicitly set,
-// that value is used. Otherwise it defaults to true (device pairing is disabled
-// by default). Set disableDevicePairing: false to opt in.
 func shouldDisableDevicePairing(auth *clawv1alpha1.AuthSpec) bool {
 	if auth != nil && auth.DisableDevicePairing != nil {
 		return *auth.DisableDevicePairing
@@ -65,10 +61,13 @@ func shouldDisableDevicePairing(auth *clawv1alpha1.AuthSpec) bool {
 	return true
 }
 
-// injectAuthMode unconditionally sets gateway.auth.mode and
-// gateway.controlUi.dangerouslyDisableDeviceAuth based on spec.auth.
-// Always-win: user config cannot override these values.
+// injectAuthMode unconditionally sets gateway.auth.mode based on spec.auth.
+// Legacy instances retain their device-auth bypass until explicitly migrated.
 func injectAuthMode(config map[string]any, instance *clawv1alpha1.Claw) {
+	injectAuthModeForGeneration(config, instance, openClaw72ConfigGeneration)
+}
+
+func injectAuthModeForGeneration(config map[string]any, instance *clawv1alpha1.Claw, generation configGeneration) {
 	authMode := "token"
 	if instance.Spec.Auth != nil && instance.Spec.Auth.Mode == clawv1alpha1.AuthModePassword {
 		authMode = "password"
@@ -76,9 +75,11 @@ func injectAuthMode(config map[string]any, instance *clawv1alpha1.Claw) {
 
 	gateway := ensureNestedMap(config, configKeyGateway)
 	gateway["auth"] = map[string]any{"mode": authMode}
-
-	controlUI := ensureNestedMap(gateway, configKeyControlUI)
-	controlUI["dangerouslyDisableDeviceAuth"] = shouldDisableDevicePairing(instance.Spec.Auth)
+	if generation == legacyConfigGeneration {
+		ensureNestedMap(gateway, configKeyControlUI)["dangerouslyDisableDeviceAuth"] = shouldDisableDevicePairing(instance.Spec.Auth)
+	} else if controlUI, ok := gateway[configKeyControlUI].(map[string]any); ok {
+		delete(controlUI, "dangerouslyDisableDeviceAuth")
+	}
 }
 
 // configureClawDeploymentForAuth adds the OPENCLAW_GATEWAY_PASSWORD env var to the
