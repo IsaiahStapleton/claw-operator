@@ -69,7 +69,7 @@ const (
 	DefaultKubectlImage         = "quay.io/openshift/origin-cli:4.21"
 
 	OpenClawImageBase      = "ghcr.io/openclaw/openclaw"
-	DefaultOpenClawVersion = "2026.6.10"
+	DefaultOpenClawVersion = "2026.7.1"
 	DefaultOpenClawImage   = OpenClawImageBase + ":" + DefaultOpenClawVersion
 
 	// OpenClaw JSON config keys shared across enrichment functions
